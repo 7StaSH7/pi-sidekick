@@ -79,7 +79,7 @@ export default function fusion(pi: ExtensionAPI) {
   function status(ctx: ExtensionContext) {
     const text = state.enabled
       ? `Fusion · ${displaySidekick(config.sidekick)}${busy ? ' · working' : ''}`
-      : startupFailure ? 'Fusion · startup error · /fusion setup, on or off' : undefined;
+      : startupFailure ? 'Fusion · startup error · /sidekick setup, on or off' : undefined;
     ctx.ui.setStatus('fusion', text);
   }
   function blockStartup(ctx: ExtensionContext, error: unknown) {
@@ -87,7 +87,7 @@ export default function fusion(pi: ExtensionAPI) {
     state = { ...state, enabled: false };
     tools();
     status(ctx);
-    ctx.ui.notify(`Fusion startup failed: ${startupFailure}. Input is blocked; use /fusion setup, /fusion on or /fusion off.`, 'error');
+    ctx.ui.notify(`Fusion startup failed: ${startupFailure}. Input is blocked; use /sidekick setup, /sidekick on or /sidekick off.`, 'error');
   }
   function save(ctx: ExtensionContext) {
     pi.appendEntry(STATE, state);
@@ -110,7 +110,7 @@ export default function fusion(pi: ExtensionAPI) {
   function checkedFile(file: string) {
     const base = root();
     if (!file.endsWith('.jsonl') || !existsSync(file) || !realpathSync(file).startsWith(base + sep)) {
-      throw new Error('Fusion checkpoint is missing or outside its session directory. Use /fusion reset to start a new sidekick.');
+      throw new Error('Fusion checkpoint is missing or outside its session directory. Use /sidekick reset to start a new sidekick.');
     }
     return realpathSync(file);
   }
@@ -235,7 +235,7 @@ export default function fusion(pi: ExtensionAPI) {
       success_criteria: Type.String({ minLength: 1, maxLength: 8000, description: 'Observable acceptance checks, tests and expected result.' }),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
-      if (!state.enabled) throw new Error('Fusion is off. Enable it with /fusion on.');
+      if (!state.enabled) throw new Error('Fusion is off. Enable it with /sidekick on.');
       if (!ctx.isProjectTrusted()) throw new Error('Fusion sidekick requires a trusted project.');
       const selected = validateSidekickSelection(config.sidekick);
       const timeoutMinutes = validateTimeoutMinutes(config.timeoutMinutes);
@@ -413,7 +413,7 @@ export default function fusion(pi: ExtensionAPI) {
       blockStartup(ctx, error);
     }
   }
-  pi.registerCommand('fusion', {
+  pi.registerCommand('sidekick', {
     description: 'Fusion: on | off | setup | stats | status | reset',
     getArgumentCompletions: prefix => ['on', 'off', 'setup', 'stats', 'status', 'reset'].filter(x => x.startsWith(prefix)).map(x => ({ value: x, label: x })),
     handler: async (args, ctx) => {
@@ -437,11 +437,11 @@ export default function fusion(pi: ExtensionAPI) {
           save(ctx);
           tools();
         } else if (command === 'reset') {
-          if (startupFailure) throw new Error('Fusion startup failed; use /fusion setup or /fusion on to retry, or /fusion off to disable.');
+          if (startupFailure) throw new Error('Fusion startup failed; use /sidekick setup or /sidekick on to retry, or /sidekick off to disable.');
           await stop();
           state = { enabled: state.enabled };
           save(ctx);
-        } else if (command !== 'status') throw new Error('Use /fusion on | off | setup | stats | status | reset');
+        } else if (command !== 'status') throw new Error('Use /sidekick on | off | setup | stats | status | reset');
         ctx.ui.notify(`Fusion ${state.enabled ? 'ON' : 'OFF'} · ${displaySidekick(config.sidekick)} · timeout ${config.timeoutMinutes} minutes${busy ? ' · working' : ''}\n${state.checkpoint?.file ?? 'Sidekick session will appear on the first task.'}`, 'info');
       } catch (error) {
         if (command === 'on') blockStartup(ctx, error);
@@ -455,7 +455,7 @@ export default function fusion(pi: ExtensionAPI) {
     try {
       requireModel(ctx.modelRegistry, config.sidekick, getSupportedThinkingLevels);
     } catch (error) {
-      ctx.ui.notify(`${String(error)} Use /fusion setup, /fusion on or /fusion off.`, 'error');
+      ctx.ui.notify(`${String(error)} Use /sidekick setup, /sidekick on or /sidekick off.`, 'error');
       return { action: 'handled' };
     }
   });

@@ -18,7 +18,7 @@ You ↔ Lead model
       Lead verifies the diff and results
 ```
 
-> **Naming:** the package is `pi-sidekick`. Its runtime commands remain `/fusion`, its tool is `fusion_sidekick`, and its saved configuration keeps the `fusion` name for compatibility with existing installations.
+> **Naming:** the package is `pi-sidekick` and the runtime command is `/sidekick`. The internal tool remains `fusion_sidekick`; configuration, session paths, and state identifiers retain `fusion` naming so existing installations keep their data.
 
 ## Why use it?
 
@@ -37,7 +37,7 @@ This is one persistent worker, not a multi-agent swarm. The lead decides when de
 1. Install the tagged release:
 
    ```bash
-   pi install git:github.com/7StaSH7/pi-sidekick@v0.1.0
+   pi install git:github.com/7StaSH7/pi-sidekick@v0.1.1
    ```
 
 2. In pi, reload extensions:
@@ -49,7 +49,7 @@ This is one persistent worker, not a multi-agent swarm. The lead decides when de
 3. If you have not authenticated a sidekick provider, use `/login` and choose OpenAI Codex or OpenAI. Then configure the worker:
 
    ```text
-   /fusion setup
+   /sidekick setup
    ```
 
 4. Give the lead a bounded task, for example:
@@ -60,7 +60,7 @@ This is one persistent worker, not a multi-agent swarm. The lead decides when de
    results before reporting completion.
    ```
 
-New sessions enable delegation automatically when the configured model is available. `/fusion off` persists for that lead session. The default is `openai-codex/gpt-5.6-luna` with `max` reasoning; **that model need not be available in your account**. Use `/fusion setup` to select a model you actually have. An unavailable default blocks ordinary input until you run setup, enable a valid configuration, or turn Fusion off.
+New sessions enable delegation automatically when the configured model is available. `/sidekick off` persists for that lead session. The default is `openai-codex/gpt-5.6-luna` with `max` reasoning; **that model need not be available in your account**. Use `/sidekick setup` to select a model you actually have. An unavailable default blocks ordinary input until you run setup, enable a valid configuration, or turn Fusion off.
 
 Already using a local checkout? Keep only one installation enabled; do not load the local and GitHub copies together. Local development still supports `pi install .`.
 
@@ -68,12 +68,12 @@ Already using a local checkout? Keep only one installation enabled; do not load 
 
 | Command | What it does |
 | --- | --- |
-| `/fusion setup` | Choose the sidekick model, supported reasoning, and timeout. |
-| `/fusion on` | Validate the selection and enable delegation. |
-| `/fusion off` | Stop the idle worker and disable delegation. |
-| `/fusion status` | Show the selection, timeout, and saved session path. |
-| `/fusion stats` | Show delegated cost estimates for the current branch. |
-| `/fusion reset` | Use fresh sidekick history on the next task; does not undo edits. |
+| `/sidekick setup` | Choose the sidekick model, supported reasoning, and timeout. |
+| `/sidekick on` | Validate the selection and enable delegation. |
+| `/sidekick off` | Stop the idle worker and disable delegation. |
+| `/sidekick status` | Show the selection, timeout, and saved session path. |
+| `/sidekick stats` | Show delegated cost estimates for the current branch. |
+| `/sidekick reset` | Use fresh sidekick history on the next task; does not undo edits. |
 
 During a task, status and statistics remain available. Press **Esc** to cancel before changing settings or resetting. Cancellation keeps any file changes already made.
 
@@ -114,13 +114,13 @@ Configuration lives at `~/.pi/agent/fusion.json` (or inside `PI_CODING_AGENT_DIR
 }
 ```
 
-Prefer `/fusion setup` to editing JSON. The timeout accepts integers from **1 to 1440 minutes**; setup offers 15, 30, 60, 120, 240, and any currently configured value. Missing timeout values default to 60. The old boolean `animation` field is accepted for migration, ignored, and omitted on the next save.
+Prefer `/sidekick setup` to editing JSON. The timeout accepts integers from **1 to 1440 minutes**; setup offers 15, 30, 60, 120, 240, and any currently configured value. Missing timeout values default to 60. The old boolean `animation` field is accepted for migration, ignored, and omitted on the next save.
 
 Private session files live under `~/.pi/agent/fusion/sessions/`. Resume preserves worker history; lead forks, clones, and tree navigation use checkpoint-aware branching rather than inheriting abandoned work. Session files may contain source code, commands, and tool results: do not publish them.
 
 ### Cost estimates, not savings claims
 
-`/fusion stats` compares sidekick usage with the estimated price of **the same token quantities** at the lead model's captured rates. Reported API costs are used when complete and usable; otherwise sidekick cost is estimated from captured rates. Missing or unusable prices are shown as unavailable, not free.
+`/sidekick stats` compares sidekick usage with the estimated price of **the same token quantities** at the lead model's captured rates. Reported API costs are used when complete and usable; otherwise sidekick cost is estimated from captured rates. Missing or unusable prices are shown as unavailable, not free.
 
 Estimates include recorded failed and cancelled work, but exclude lead planning and review. Subscription billing, different tokenization, retries, context size, and differing solution quality make this **neither a bill nor a benchmark**. No measured speed, quality, or cost advantage is claimed.
 
@@ -138,11 +138,11 @@ No extra runtime dependencies are bundled. The extension uses the Pi-provided co
 
 | Symptom | Action |
 | --- | --- |
-| Startup error or ordinary input blocked | Run `/login` if needed, then `/fusion setup`; `/fusion off` restores lead-only operation. |
-| `/fusion` is missing after installation | Try `/reload`; if still missing, restart pi with `pi --resume`. |
+| Startup error or ordinary input blocked | Run `/login` if needed, then `/sidekick setup`; `/sidekick off` restores lead-only operation. |
+| `/sidekick` is missing after installation | Try `/reload`; if still missing, restart pi with `pi --resume`. |
 | Timeout, cancellation, or `toolUse` failure | Inspect the error's saved session and working-tree diff before continuing. A blocked tool can intentionally end the worker. |
 | Old “tool budget exhausted (64)” error | Reload the extension; this release removes that cap. An already-running worker can still hold the old code. |
-| Need to discard worker conversation | Cancel any active task, then `/fusion reset`. This does not revert files. |
+| Need to discard worker conversation | Cancel any active task, then `/sidekick reset`. This does not revert files. |
 
 The extension does not blindly replay failed briefs: a failed task may already have performed edits. Native pi/provider retry behavior remains pi's responsibility.
 

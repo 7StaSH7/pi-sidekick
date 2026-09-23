@@ -114,13 +114,13 @@ export function assertModel(model, expected, thinking) {
 
 export function requireModel(registry, expected, getSupportedThinkingLevels = defaultSupportedThinkingLevels) {
   const model = registry.find(expected.provider, expected.id);
-  if (!model) throw new Error(`Configured Fusion sidekick is unavailable: ${expected.provider}/${expected.id}. Run /fusion setup.`);
+  if (!model) throw new Error(`Configured Fusion sidekick is unavailable: ${expected.provider}/${expected.id}. Run /sidekick setup.`);
   if (!registry.hasConfiguredAuth(model)) {
     throw new Error(`Configure authentication for the Fusion sidekick: /login ${expected.provider}`);
   }
   const levels = getSupportedThinkingLevels(model);
   if (!levels.includes(expected.thinking)) {
-    throw new Error(`${expected.provider}/${expected.id} does not support reasoning=${expected.thinking}. Run /fusion setup.`);
+    throw new Error(`${expected.provider}/${expected.id} does not support reasoning=${expected.thinking}. Run /sidekick setup.`);
   }
   return model;
 }

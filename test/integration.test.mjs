@@ -81,7 +81,8 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     const initialEntries = await peer.request('get_entries');
     const initialFusionState = initialEntries.entries.findLast(e => e.type === 'custom' && e.customType === STATE);
     const commands = await peer.request('get_commands');
-    assert(commands.commands.some(c => c.name === 'fusion'), JSON.stringify(commands));
+    assert(commands.commands.some(c => c.name === 'sidekick'), JSON.stringify(commands));
+    assert(!commands.commands.some(c => c.name === 'fusion'), JSON.stringify(commands));
     assert.equal(initialState.model.provider, LEAD.provider);
     assert.equal(initialState.model.id, LEAD.id);
     assert.equal(initialState.thinkingLevel, LEAD.thinking);
@@ -176,7 +177,7 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     assert(statsEntries.some(record => record.outcome === 'cancelled'));
     assert(!statsEntries.some(record => record.outcome === 'error'), 'forked stats must exclude abandoned failures');
     assert.equal(new Set(statsEntries.map(record => record.callId)).size, statsEntries.length, 'each delegation gets one cost record');
-    await peer.request('prompt', { message: '/fusion stats' });
+    await peer.request('prompt', { message: '/sidekick stats' });
     assert(notifications.some(n => n.includes('Fusion delegated cost estimates') && n.includes('75.0% lower')));
 
     const events = readFileSync(env.PI_FUSION_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse);
@@ -217,8 +218,11 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
       assert.equal(result.usage.input, record.usage.input);
     }
 
-    await peer.request('prompt', { message: '/fusion off' });
+    await peer.request('prompt', { message: '/sidekick off' });
     assert(notifications.some(n => n.includes('Fusion OFF')));
+    await peer.request('prompt', { message: '/sidekick on' });
+    assert(notifications.some(n => n.includes('Fusion ON')));
+    await peer.request('prompt', { message: '/sidekick off' });
     const offSessionFile = (await peer.request('get_state')).sessionFile;
     await peer.close();
     await open(offSessionFile);
@@ -228,33 +232,33 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     const configFile = join(agentDir, 'fusion.json');
     const legacyConfig = readFileSync(configFile, 'utf8');
     assert.match(legacyConfig, /"animation":false/);
-    await peer.request('prompt', { message: '/fusion setup' });
+    await peer.request('prompt', { message: '/sidekick setup' });
     assert.equal(readFileSync(configFile, 'utf8'), legacyConfig, 'cancelled setup must preserve legacy config');
     setupChoice = 'cancel-timeout';
-    await peer.request('prompt', { message: '/fusion setup' });
+    await peer.request('prompt', { message: '/sidekick setup' });
     assert.equal(readFileSync(configFile, 'utf8'), legacyConfig, 'cancelling timeout selection must preserve config and history');
     setupChoice = 'alternate';
     setupMenus.length = 0;
-    await peer.request('prompt', { message: '/fusion setup' });
+    await peer.request('prompt', { message: '/sidekick setup' });
     assert.match(setupMenus[0].title, /Current: .*max · 90 minutes/);
     assert.match(setupMenus[0].options[0], /openai-codex\/gpt-5\.6-luna.*\(Current\)$/);
     assert.deepEqual(setupMenus[2].options, ['90 minutes (Current)', '15 minutes', '30 minutes', '60 minutes', '120 minutes', '240 minutes']);
     const selectedConfig = JSON.parse(readFileSync(configFile, 'utf8'));
     assert.deepEqual(selectedConfig, { sidekick: ALT_SIDEKICK, timeoutMinutes: 90 });
-    await peer.request('prompt', { message: '/fusion status' });
+    await peer.request('prompt', { message: '/sidekick status' });
     assert(notifications.some(n => n.includes('timeout 90 minutes')), notifications.join('\n'));
     setupChoice = 'current';
     setupMenus.length = 0;
-    await peer.request('prompt', { message: '/fusion setup' });
+    await peer.request('prompt', { message: '/sidekick setup' });
     assert.deepEqual(JSON.parse(readFileSync(configFile, 'utf8')), selectedConfig, 'accepting all focused current options keeps raw values');
     assert(setupMenus.every(menu => menu.options[0].endsWith('(Current)')));
     assert.equal(setupMenus[1].options[0], 'high (Current)');
     setupChoice = 'sixty';
-    await peer.request('prompt', { message: '/fusion setup' });
+    await peer.request('prompt', { message: '/sidekick setup' });
     assert.equal(JSON.parse(readFileSync(configFile, 'utf8')).timeoutMinutes, 60);
     setupChoice = 'current';
     setupMenus.length = 0;
-    await peer.request('prompt', { message: '/fusion setup' });
+    await peer.request('prompt', { message: '/sidekick setup' });
     assert.deepEqual(setupMenus[2].options, ['60 minutes (Current)', '15 minutes', '30 minutes', '120 minutes', '240 minutes']);
     assert.deepEqual(JSON.parse(readFileSync(configFile, 'utf8')), { sidekick: ALT_SIDEKICK, timeoutMinutes: 60 });
     const leadAfterSetup = await peer.request('get_state');
@@ -318,16 +322,16 @@ test('native pi: missing auth fails closed until explicit off', { timeout: 60000
     assert(notifications.some(n => n.includes('Fusion startup failed')), notifications.join('\\n'));
     assert(notifications.some(n => n.includes('Input is blocked')), notifications.join('\\n'));
 
-    await peer.request('prompt', { message: '/fusion reset' });
+    await peer.request('prompt', { message: '/sidekick reset' });
     const resetEntries = await peer.request('get_entries');
     assert.equal(resetEntries.entries.some(e => e.type === 'custom' && e.customType === STATE), false);
-    assert(notifications.some(n => n.includes('use /fusion setup, /fusion on or /fusion off')), notifications.join('\\n'));
+    assert(notifications.some(n => n.includes('use /sidekick setup, /sidekick on or /sidekick off')), notifications.join('\\n'));
 
     await peer.request('prompt', { message: 'READ blocked' });
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.equal(existsSync(env.PI_FUSION_TEST_LOG), false, 'blocked input must not reach any model');
 
-    await peer.request('prompt', { message: '/fusion off' });
+    await peer.request('prompt', { message: '/sidekick off' });
     const entries = await peer.request('get_entries');
     const state = entries.entries.findLast(e => e.type === 'custom' && e.customType === STATE);
     assert.equal(state?.data.enabled, false);

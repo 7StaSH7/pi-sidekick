@@ -2,6 +2,12 @@
 
 Notable changes are recorded here. Releases use [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-09-23
+
+- Rename the runtime command from `/fusion` to `/sidekick`; internal Fusion tool, configuration, session, and state names remain unchanged for compatibility.
+
+[0.1.1]: https://github.com/7StaSH7/pi-sidekick/releases/tag/v0.1.1
+
 ## [0.1.0] - 2026-09-23
 
 First public release as **pi-sidekick**. Existing `/fusion` commands, `fusion_sidekick` tool, and saved configuration/session names are preserved.
