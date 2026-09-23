@@ -1,0 +1,9 @@
+node_modules/
+*.log
+*.tgz
+.env
+.env.*
+*.jsonl
+
+# Optional workstation-only test for a separately installed terminal theme.
+/test/footer.test.mjs

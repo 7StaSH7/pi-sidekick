@@ -1,0 +1,28 @@
+{
+  "name": "pi-sidekick",
+  "version": "0.1.0",
+  "description": "Keep your lead model. Delegate bounded work to a persistent OpenAI sidekick in pi.",
+  "license": "MIT",
+  "author": "Aleksandr Stadnik",
+  "repository": { "type": "git", "url": "git+https://github.com/7StaSH7/pi-sidekick.git" },
+  "homepage": "https://github.com/7StaSH7/pi-sidekick#readme",
+  "bugs": { "url": "https://github.com/7StaSH7/pi-sidekick/issues" },
+  "files": ["index.ts", "*.mjs", "README.md", "LICENSE", "CHANGELOG.md", "CONTRIBUTING.md"],
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "keywords": ["pi-package", "pi-extension", "sidekick", "coding-agent", "openai"],
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.87.1",
+    "@earendil-works/pi-tui": ">=0.87.1",
+    "@earendil-works/pi-coding-agent": ">=0.87.1",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "typebox": { "optional": true }
+  }
+}
