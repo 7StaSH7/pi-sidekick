@@ -25,8 +25,8 @@ const modelSpec = model => ({
 });
 
 export default function fixture(pi: any) {
-  if (process.env.PI_FUSION_TEST !== '1') throw new Error('Test fixture must not load outside isolated tests.');
-  const log = (data: any) => appendFileSync(process.env.PI_FUSION_TEST_LOG!, JSON.stringify(data) + '\n');
+  if (process.env.PI_SIDEKICK_TEST !== '1') throw new Error('Test fixture must not load outside isolated tests.');
+  const log = (data: any) => appendFileSync(process.env.PI_SIDEKICK_TEST_LOG!, JSON.stringify(data) + '\n');
   const child = process.env[WORKER_ENV] === '1';
   const modelsByProvider: Record<string, any[]> = {
     anthropic: [TEST_LEAD],
@@ -80,11 +80,25 @@ export default function fixture(pi: any) {
   };
   for (const [provider, models] of Object.entries(modelsByProvider)) {
     pi.registerProvider(provider, {
-      api: 'fusion-offline-test',
-      ...(process.env.PI_FUSION_TEST_NO_AUTH === '1' ? {} : { apiKey: 'offline-fixture-not-a-real-key' }),
+      api: 'sidekick-offline-test',
+      ...(process.env.PI_SIDEKICK_TEST_NO_AUTH === '1' ? {} : { apiKey: 'offline-fixture-not-a-real-key' }),
       baseUrl: 'http://127.0.0.1:9',
       models: models.map(modelSpec),
       streamSimple,
+    });
+  }
+  if (!child) {
+    pi.registerCommand('fixture-legacy-checkpoint', {
+      handler: (args: string, ctx: any) => {
+        const { file, leaf, enabled = true } = JSON.parse(args);
+        pi.appendEntry('pi-fusion-state-v1', {
+          enabled,
+          checkpoint: { file, leaf, owner: ctx.sessionManager.getSessionId() },
+        });
+      },
+    });
+    pi.registerCommand('fixture-legacy-stats', {
+      handler: (args: string) => pi.appendEntry('pi-fusion-stats-v1', JSON.parse(args)),
     });
   }
   pi.on('tool_call', async (event: any, ctx: any) => {

@@ -2,7 +2,7 @@ import { clean } from './activity.mjs';
 import { formatTaskCost } from './cost.mjs';
 
 export function callText(args, expanded, theme) {
-  const title = theme.fg('toolTitle', theme.bold('Fusion sidekick'));
+  const title = theme.fg('toolTitle', theme.bold('Sidekick'));
   if (!expanded) return `${title}\n${theme.fg('muted', clean(args.brief, 120) || 'Preparing delegation…')}`;
   return `${title}\n${args.brief ?? ''}\n\nConstraints\n${args.constraints ?? ''}\n\nSuccess criteria\n${args.success_criteria ?? ''}`;
 }

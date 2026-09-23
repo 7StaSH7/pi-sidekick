@@ -11,7 +11,7 @@ const project = fileURLToPath(new URL('..', import.meta.url));
 const sidekick = { provider: 'openai-codex', id: 'gpt-5.6-luna', thinking: 'max' };
 
 test('worker tool_call hook allows 65 calls and still blocks disallowed tools', { timeout: 60000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-fusion-worker-hooks-'));
+  const dir = mkdtempSync(join(tmpdir(), 'pi-sidekick-worker-hooks-'));
   const agentDir = join(dir, 'agent');
   const cwd = join(dir, 'work');
   const resultFile = join(dir, 'result');
@@ -21,9 +21,9 @@ test('worker tool_call hook allows 65 calls and still blocks disallowed tools', 
     ...process.env,
     PI_CODING_AGENT_DIR: agentDir,
     PI_OFFLINE: '1',
-    PI_FUSION_TEST: '1',
-    PI_FUSION_TEST_LOG: join(dir, 'events.jsonl'),
-    PI_FUSION_HOOK_TEST_RESULT: resultFile,
+    PI_SIDEKICK_TEST: '1',
+    PI_SIDEKICK_TEST_LOG: join(dir, 'events.jsonl'),
+    PI_SIDEKICK_HOOK_TEST_RESULT: resultFile,
     [WORKER_ENV]: '1',
     [WORKER_CONFIG_ENV]: JSON.stringify(sidekick),
   };

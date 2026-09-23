@@ -24,6 +24,7 @@ test('Pi-style progress is themed, wraps safely, and completed results stop show
   const args = { brief: 'Refactor the file', constraints: 'Keep public API', success_criteria: 'Tests pass' };
   const collapsedCall = callText(args, false, theme);
   const expandedCall = callText(args, true, theme);
+  assert(collapsedCall.includes('Sidekick'));
   assert(!collapsedCall.includes('Keep public API'));
   assert(expandedCall.includes('Keep public API'));
   assert(expandedCall.includes('Tests pass'));

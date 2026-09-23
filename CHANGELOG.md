@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. Releases use [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-09-23
+
+- Rename active UI branding, the public tool, configuration, worker environment, session directory, and state/stat markers to Sidekick.
+- Migrate valid `fusion.json` configuration to `sidekick.json` without removing the original; prefer the new file and fail on invalid data.
+- Restore legacy state/stat markers and copy old checkpoints into `sidekick/sessions` on demand without rewriting or deleting source sessions.
+- Keep historical lead-session tool calls as stored; the former `fusion_sidekick` tool is not registered.
+
+[0.2.0]: https://github.com/7StaSH7/pi-sidekick/releases/tag/v0.2.0
+
 ## [0.1.1] - 2026-09-23
 
 - Rename the runtime command from `/fusion` to `/sidekick`; internal Fusion tool, configuration, session, and state names remain unchanged for compatibility.

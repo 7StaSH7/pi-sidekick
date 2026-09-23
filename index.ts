@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { chmodSync, constants, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { getAgentDir, getPackageDir, SessionManager, truncateHead, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -8,9 +8,9 @@ import { Type } from 'typebox';
 import { Text } from '@earendil-works/pi-tui';
 import { callText, resultText } from './presentation.mjs';
 import { RpcPeer } from './rpc.mjs';
-import { loadFusionConfig, saveFusionConfig } from './config.mjs';
+import { loadSidekickConfig, saveSidekickConfig } from './config.mjs';
 import { formatStats, formatTaskCost, makeDelegationRecord, snapshotModel } from './cost.mjs';
-import { DEFAULT_TIMEOUT_MINUTES, STATE, STATS, TOOL, WORKER_ENV, WORKER_CONFIG_ENV, WORKER_TOOLS, LEAD_PROMPT, assertModel, requireModel, restoreState, hasSidekickSibling, inheritedExtensions, parseLaunchSidekick, sidekickPrompt, displaySidekick, validateSidekickSelection, defaultFusionConfig, timeoutMilliseconds, validateTimeoutMinutes } from './policy.mjs';
+import { DEFAULT_TIMEOUT_MINUTES, STATE, STATS, TOOL, WORKER_ENV, WORKER_CONFIG_ENV, WORKER_TOOLS, LEAD_PROMPT, assertModel, requireModel, restoreState, hasSidekickSibling, isStatsEntry, inheritedExtensions, parseLaunchSidekick, sidekickPrompt, displaySidekick, validateSidekickSelection, defaultSidekickConfig, timeoutMilliseconds, validateTimeoutMinutes } from './policy.mjs';
 import { applyActivityEvent, createActivityState, formatActivity, startActivityAnimation } from './activity.mjs';
 
 const entryPath = fileURLToPath(import.meta.url);
@@ -35,7 +35,7 @@ function workerExtension(pi: ExtensionAPI) {
     try {
       guard(ctx);
     } catch (error) {
-      ctx.ui.notify(`Fusion blocked: ${String(error)}`, 'error');
+      ctx.ui.notify(`Sidekick blocked: ${String(error)}`, 'error');
       return { action: 'handled' };
     }
     pi.setActiveTools(WORKER_TOOLS);
@@ -44,20 +44,20 @@ function workerExtension(pi: ExtensionAPI) {
   pi.on('tool_call', (event, ctx) => {
     guard(ctx);
     if (!WORKER_TOOLS.includes(event.toolName)) {
-      return { block: true, reason: 'Fusion sidekick cannot use delegation or non-allowlisted tools.', terminate: true };
+      return { block: true, reason: 'Sidekick cannot use delegation or non-allowlisted tools.', terminate: true };
     }
   });
 }
 
-export default function fusion(pi: ExtensionAPI) {
-  // The child gets native pi hooks and overrides, but never another Fusion lead.
+export default function sidekick(pi: ExtensionAPI) {
+  // The child gets native pi hooks and overrides, but never another Sidekick lead.
   if (process.env[WORKER_ENV] === '1') {
     workerExtension(pi);
     return;
   }
 
   let state: State = { enabled: false };
-  let config = defaultFusionConfig();
+  let config = defaultSidekickConfig();
   let startupFailure: string | undefined;
   let peer: RpcPeer | undefined;
   let childFile: string | undefined;
@@ -78,16 +78,16 @@ export default function fusion(pi: ExtensionAPI) {
 
   function status(ctx: ExtensionContext) {
     const text = state.enabled
-      ? `Fusion · ${displaySidekick(config.sidekick)}${busy ? ' · working' : ''}`
-      : startupFailure ? 'Fusion · startup error · /sidekick setup, on or off' : undefined;
-    ctx.ui.setStatus('fusion', text);
+      ? `Sidekick · ${displaySidekick(config.sidekick)}${busy ? ' · working' : ''}`
+      : startupFailure ? 'Sidekick · startup error · /sidekick setup, on or off' : undefined;
+    ctx.ui.setStatus('sidekick', text);
   }
   function blockStartup(ctx: ExtensionContext, error: unknown) {
     startupFailure = String(error);
     state = { ...state, enabled: false };
     tools();
     status(ctx);
-    ctx.ui.notify(`Fusion startup failed: ${startupFailure}. Input is blocked; use /sidekick setup, /sidekick on or /sidekick off.`, 'error');
+    ctx.ui.notify(`Sidekick startup failed: ${startupFailure}. Input is blocked; use /sidekick setup, /sidekick on or /sidekick off.`, 'error');
   }
   function save(ctx: ExtensionContext) {
     pi.appendEntry(STATE, state);
@@ -103,27 +103,66 @@ export default function fusion(pi: ExtensionAPI) {
     await current?.close();
   }
   function root() {
-    const path = join(getAgentDir(), 'fusion', 'sessions');
+    const path = join(getAgentDir(), 'sidekick', 'sessions');
     mkdirSync(path, { recursive: true, mode: 0o700 });
     return realpathSync(path);
   }
+  function legacyRoot() {
+    const agentDir = realpathSync(getAgentDir());
+    const path = join(agentDir, 'fusion', 'sessions');
+    if (!existsSync(path)) return undefined;
+    const resolved = realpathSync(path);
+    if (resolved !== path || !statSync(resolved).isDirectory()) {
+      throw new Error('Legacy Sidekick session directory is outside its expected location.');
+    }
+    return resolved;
+  }
+  function inside(base: string, file: string) {
+    return file.startsWith(base + sep);
+  }
   function checkedFile(file: string) {
     const base = root();
-    if (!file.endsWith('.jsonl') || !existsSync(file) || !realpathSync(file).startsWith(base + sep)) {
-      throw new Error('Fusion checkpoint is missing or outside its session directory. Use /sidekick reset to start a new sidekick.');
+    if (!file.endsWith('.jsonl') || !existsSync(file)) {
+      throw new Error('Sidekick checkpoint is missing or outside its session directory. Use /sidekick reset to start a new session.');
     }
-    return realpathSync(file);
+    const resolved = realpathSync(file);
+    if (!resolved.endsWith('.jsonl') || !statSync(resolved).isFile()) {
+      throw new Error('Sidekick checkpoint is not a regular session file.');
+    }
+    if (inside(base, resolved)) return resolved;
+    const oldBase = legacyRoot();
+    if (!oldBase || !inside(oldBase, resolved)) {
+      throw new Error('Sidekick checkpoint is missing or outside its session directory. Use /sidekick reset to start a new session.');
+    }
+    const migrated = join(base, basename(file));
+    const temporary = `${migrated}.tmp-${randomUUID()}`;
+    copyFileSync(resolved, temporary, constants.COPYFILE_EXCL);
+    chmodSync(temporary, 0o600);
+    try {
+      try {
+        linkSync(temporary, migrated);
+      } catch (error: any) {
+        if (error.code !== 'EEXIST') throw error;
+      }
+    } finally {
+      unlinkSync(temporary);
+    }
+    const target = realpathSync(migrated);
+    if (!inside(base, target) || !statSync(target).isFile()) {
+      throw new Error('Migrated Sidekick checkpoint is outside its session directory.');
+    }
+    return target;
   }
   function resumeFile(ctx: ExtensionContext) {
     const checkpoint = state.checkpoint;
     if (!checkpoint) return undefined;
     const file = checkedFile(checkpoint.file);
     const sm = SessionManager.open(file, root());
-    if (resolve(sm.getCwd()) !== resolve(ctx.cwd)) throw new Error('Fusion checkpoint belongs to a different working directory.');
+    if (resolve(sm.getCwd()) !== resolve(ctx.cwd)) throw new Error('Sidekick checkpoint belongs to a different working directory.');
     if (checkpoint.owner === ctx.sessionManager.getSessionId() && sm.getLeafId() === checkpoint.leaf) return file;
     // A fork or /tree rewind must not inherit the sidekick's abandoned future.
     if (checkpoint.leaf === null) return undefined;
-    if (!sm.getEntry(checkpoint.leaf)) throw new Error('Fusion checkpoint entry is missing.');
+    if (!sm.getEntry(checkpoint.leaf)) throw new Error('Sidekick checkpoint entry is missing.');
     return sm.createBranchedSession(checkpoint.leaf);
   }
   function checkpoint(ctx: ExtensionContext) {
@@ -136,14 +175,14 @@ export default function fusion(pi: ExtensionAPI) {
   async function ui(request: any) {
     const ctx = activeContext;
     if (!ctx) return { cancelled: true };
-    const title = `Fusion sidekick · ${displaySidekick(config.sidekick)} · ${request.title ?? ''}`;
+    const title = `Sidekick · ${displaySidekick(config.sidekick)} · ${request.title ?? ''}`;
     const options = { signal: uiSignal, ...(request.timeout ? { timeout: request.timeout } : {}) };
     if (request.method === 'notify') {
-      if (request.message?.startsWith('Fusion blocked:')) {
+      if (request.message?.startsWith('Sidekick blocked:')) {
         taskError = request.message;
         void peer?.close();
       }
-      if (ctx.hasUI) ctx.ui.notify(`Fusion sidekick: ${request.message}`, request.notifyType ?? 'info');
+      if (ctx.hasUI) ctx.ui.notify(`Sidekick: ${request.message}`, request.notifyType ?? 'info');
       return;
     }
     if (!ctx.hasUI || uiSignal?.aborted) return { cancelled: true };
@@ -212,7 +251,7 @@ export default function fusion(pi: ExtensionAPI) {
     const child = await peer.request('get_state');
     assertModel(child.model, expected, child.thinkingLevel);
     if (typeof child.sessionFile !== 'string' || dirname(resolve(child.sessionFile)) !== root()) {
-      throw new Error('Sidekick did not create a private Fusion session.');
+      throw new Error('Sidekick did not create a private session.');
     }
     childFile = child.sessionFile;
     return peer;
@@ -220,7 +259,7 @@ export default function fusion(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: TOOL,
-    label: 'Fusion · sidekick',
+    label: 'Sidekick',
     description: 'Delegate a bounded task to the persistent configured OpenAI sidekick. Call alone, never alongside other tools. Supply a self-contained brief, constraints and success criteria. Returns its report (at most 2000 lines / 50KB) and session location. The lead must review actual changes. Fails rather than switching models.',
     promptSnippet: 'Delegate implementation or scoped exploration to the configured sidekick',
     renderCall(args, theme, context) {
@@ -235,15 +274,15 @@ export default function fusion(pi: ExtensionAPI) {
       success_criteria: Type.String({ minLength: 1, maxLength: 8000, description: 'Observable acceptance checks, tests and expected result.' }),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
-      if (!state.enabled) throw new Error('Fusion is off. Enable it with /sidekick on.');
-      if (!ctx.isProjectTrusted()) throw new Error('Fusion sidekick requires a trusted project.');
+      if (!state.enabled) throw new Error('Sidekick is off. Enable it with /sidekick on.');
+      if (!ctx.isProjectTrusted()) throw new Error('Sidekick requires a trusted project.');
       const selected = validateSidekickSelection(config.sidekick);
       const timeoutMinutes = validateTimeoutMinutes(config.timeoutMinutes);
       const taskTimeoutMs = timeoutMilliseconds(timeoutMinutes);
       const sidekickModel = requireModel(ctx.modelRegistry, selected, getSupportedThinkingLevels);
       const leadSnapshot = snapshotModel(ctx.model);
       const sidekickSnapshot = snapshotModel(sidekickModel);
-      if (busy) throw new Error('Only one Fusion task may run at a time.');
+      if (busy) throw new Error('Only one Sidekick task may run at a time.');
       signal?.throwIfAborted();
       busy = true;
       activeContext = ctx;
@@ -256,7 +295,7 @@ export default function fusion(pi: ExtensionAPI) {
       usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
       let outcome: 'success' | 'error' | 'cancelled' = 'error';
       const controller = new AbortController();
-      const deadline = setTimeout(() => controller.abort(new Error(`Fusion task exceeded ${timeoutMinutes} minutes.`)), taskTimeoutMs);
+      const deadline = setTimeout(() => controller.abort(new Error(`Sidekick task exceeded ${timeoutMinutes} minutes.`)), taskTimeoutMs);
       const cancel = () => controller.abort(signal?.reason);
       signal?.addEventListener('abort', cancel, { once: true });
       uiSignal = controller.signal;
@@ -291,15 +330,15 @@ export default function fusion(pi: ExtensionAPI) {
         const settled = current.waitForEvent(e => e.type === 'agent_settled', { signal: controller.signal, timeoutMs: taskTimeoutMs });
         // Attach a rejection handler before sending: cancellation can win the acceptance race.
         void settled.catch(() => {});
-        await current.request('prompt', { message: `Fusion brief\n\n${params.brief}\n\nConstraints\n${params.constraints}\n\nSuccess criteria\n${params.success_criteria}` });
+        await current.request('prompt', { message: `Sidekick brief\n\n${params.brief}\n\nConstraints\n${params.constraints}\n\nSuccess criteria\n${params.success_criteria}` });
         await settled;
         controller.signal.throwIfAborted();
         if (taskError) throw new Error(taskError);
         if (!lastAssistant || lastAssistant.stopReason !== 'stop') {
-          throw new Error(`Fusion sidekick did not finish successfully (${lastAssistant?.stopReason ?? 'no final answer'}). Changes may be partial; inspect the saved session.`);
+          throw new Error(`Sidekick did not finish successfully (${lastAssistant?.stopReason ?? 'no final answer'}). Changes may be partial; inspect the saved session.`);
         }
         const text = lastAssistant.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n');
-        if (!text.trim()) throw new Error('Fusion sidekick returned no report. Inspect its saved session before retrying.');
+        if (!text.trim()) throw new Error('Sidekick returned no report. Inspect its saved session before retrying.');
         const output = truncateHead(text);
         outcome = 'success';
         const costRecord = makeDelegationRecord(_id, leadSnapshot, sidekickSnapshot, { ...usage, costReported: usageCostReported }, outcome);
@@ -342,7 +381,7 @@ export default function fusion(pi: ExtensionAPI) {
   });
 
   async function enable(ctx: ExtensionContext) {
-    if (!ctx.isProjectTrusted()) throw new Error('Fusion requires a trusted project.');
+    if (!ctx.isProjectTrusted()) throw new Error('Sidekick requires a trusted project.');
     requireModel(ctx.modelRegistry, config.sidekick, getSupportedThinkingLevels);
     state = { ...state, enabled: true };
     startupFailure = undefined;
@@ -350,15 +389,15 @@ export default function fusion(pi: ExtensionAPI) {
     tools();
   }
   async function setup(ctx: ExtensionContext) {
-    if (!ctx.isProjectTrusted()) throw new Error('Fusion requires a trusted project.');
-    if (!ctx.hasUI) throw new Error('Fusion setup requires native select UI.');
+    if (!ctx.isProjectTrusted()) throw new Error('Sidekick requires a trusted project.');
+    if (!ctx.hasUI) throw new Error('Sidekick setup requires native select UI.');
     const selectCurrent = async (title: string, choices: string[], current?: string) => {
       const ordered = [...choices].sort((a, b) => Number(b === current) - Number(a === current));
       const labels = ordered.map(value => value === current ? `${value} (Current)` : value);
       const choice = await ctx.ui.select(title, labels, { signal: ctx.signal });
-      if (choice === undefined) throw new Error('Fusion setup cancelled; existing settings were kept.');
+      if (choice === undefined) throw new Error('Sidekick setup cancelled; existing settings were kept.');
       const index = labels.indexOf(choice);
-      if (index < 0) throw new Error('Fusion setup returned an unknown choice.');
+      if (index < 0) throw new Error('Sidekick setup returned an unknown choice.');
       return ordered[index];
     };
     const models = ctx.modelRegistry.getAvailable()
@@ -368,34 +407,34 @@ export default function fusion(pi: ExtensionAPI) {
     const modelChoices = models.map(model => `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` · ${model.name}` : ''}`);
     const currentModelIndex = models.findIndex(model => model.provider === config.sidekick.provider && model.id === config.sidekick.id);
     const modelChoice = await selectCurrent(
-      `Fusion setup · sidekick model\nCurrent: ${displaySidekick(config.sidekick)} · ${config.timeoutMinutes} minutes`,
+      `Sidekick setup · model\nCurrent: ${displaySidekick(config.sidekick)} · ${config.timeoutMinutes} minutes`,
       modelChoices, modelChoices[currentModelIndex],
     );
     const modelIndex = modelChoices.indexOf(modelChoice);
-    if (modelIndex < 0) throw new Error('Fusion setup returned an unknown model choice.');
+    if (modelIndex < 0) throw new Error('Sidekick setup returned an unknown model choice.');
     const model = models[modelIndex];
     const levels = getSupportedThinkingLevels(model);
-    const thinking = await selectCurrent(`Fusion setup · reasoning · ${model.provider}/${model.id}`, levels, config.sidekick.thinking);
+    const thinking = await selectCurrent(`Sidekick setup · reasoning · ${model.provider}/${model.id}`, levels, config.sidekick.thinking);
     if (!levels.includes(thinking)) throw new Error('Unsupported reasoning selection.');
     const selected = validateSidekickSelection({ provider: model.provider, id: model.id, thinking });
     const timeoutValues = [...new Set([15, 30, DEFAULT_TIMEOUT_MINUTES, 120, 240, config.timeoutMinutes])].sort((a, b) => a - b);
     const timeoutChoices = timeoutValues.map(minutes => `${minutes} minutes`);
-    const timeoutChoice = await selectCurrent('Fusion setup · task timeout', timeoutChoices, `${config.timeoutMinutes} minutes`);
+    const timeoutChoice = await selectCurrent('Sidekick setup · task timeout', timeoutChoices, `${config.timeoutMinutes} minutes`);
     const timeoutIndex = timeoutChoices.indexOf(timeoutChoice);
-    if (timeoutIndex < 0) throw new Error('Fusion setup returned an unknown timeout choice.');
+    if (timeoutIndex < 0) throw new Error('Sidekick setup returned an unknown timeout choice.');
     const next = { sidekick: selected, timeoutMinutes: validateTimeoutMinutes(timeoutValues[timeoutIndex]) };
     await stop();
-    config = saveFusionConfig(getAgentDir(), next);
+    config = saveSidekickConfig(getAgentDir(), next);
     startupFailure = undefined;
     state = { ...state, enabled: true };
     save(ctx);
     tools();
     status(ctx);
-    ctx.ui.notify(`Fusion setup saved: ${displaySidekick(config.sidekick)} · timeout ${config.timeoutMinutes} minutes.`, 'info');
+    ctx.ui.notify(`Sidekick setup saved: ${displaySidekick(config.sidekick)} · timeout ${config.timeoutMinutes} minutes.`, 'info');
   }
   async function restoreOrEnable(ctx: ExtensionContext) {
     try {
-      config = loadFusionConfig(getAgentDir());
+      config = loadSidekickConfig(getAgentDir());
       const restored = restoreState(ctx.sessionManager.getBranch());
       startupFailure = undefined;
       if (restored) {
@@ -414,7 +453,7 @@ export default function fusion(pi: ExtensionAPI) {
     }
   }
   pi.registerCommand('sidekick', {
-    description: 'Fusion: on | off | setup | stats | status | reset',
+    description: 'Sidekick: on | off | setup | stats | status | reset',
     getArgumentCompletions: prefix => ['on', 'off', 'setup', 'stats', 'status', 'reset'].filter(x => x.startsWith(prefix)).map(x => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       const command = args.trim() || 'status';
@@ -426,7 +465,7 @@ export default function fusion(pi: ExtensionAPI) {
         if (command === 'on') await enable(ctx);
         else if (command === 'setup') { await setup(ctx); return; }
         else if (command === 'stats') {
-          const records = ctx.sessionManager.getBranch().filter(entry => entry.type === 'custom' && entry.customType === STATS).map(entry => entry.data);
+          const records = ctx.sessionManager.getBranch().filter(isStatsEntry).map(entry => entry.data);
           ctx.ui.notify(formatStats(records), 'info');
           return;
         }
@@ -437,12 +476,12 @@ export default function fusion(pi: ExtensionAPI) {
           save(ctx);
           tools();
         } else if (command === 'reset') {
-          if (startupFailure) throw new Error('Fusion startup failed; use /sidekick setup or /sidekick on to retry, or /sidekick off to disable.');
+          if (startupFailure) throw new Error('Sidekick startup failed; use /sidekick setup or /sidekick on to retry, or /sidekick off to disable.');
           await stop();
           state = { enabled: state.enabled };
           save(ctx);
         } else if (command !== 'status') throw new Error('Use /sidekick on | off | setup | stats | status | reset');
-        ctx.ui.notify(`Fusion ${state.enabled ? 'ON' : 'OFF'} · ${displaySidekick(config.sidekick)} · timeout ${config.timeoutMinutes} minutes${busy ? ' · working' : ''}\n${state.checkpoint?.file ?? 'Sidekick session will appear on the first task.'}`, 'info');
+        ctx.ui.notify(`Sidekick ${state.enabled ? 'ON' : 'OFF'} · ${displaySidekick(config.sidekick)} · timeout ${config.timeoutMinutes} minutes${busy ? ' · working' : ''}\n${state.checkpoint?.file ?? 'Session will appear on the first task.'}`, 'info');
       } catch (error) {
         if (command === 'on') blockStartup(ctx, error);
         else ctx.ui.notify(String(error), 'error');
@@ -469,7 +508,7 @@ export default function fusion(pi: ExtensionAPI) {
   });
   pi.on('tool_call', (event, ctx) => {
     if (state.enabled && hasSidekickSibling(ctx.sessionManager.getBranch(), event.toolName)) {
-      return { block: true, reason: 'Call fusion_sidekick alone; concurrent lead tools could race with sidekick edits.' };
+      return { block: true, reason: 'Call sidekick alone; concurrent lead tools could race with worker edits.' };
     }
   });
   pi.on('session_start', async (_event, ctx) => {
@@ -487,6 +526,6 @@ export default function fusion(pi: ExtensionAPI) {
     disposed = true;
     stopAnimation?.();
     await stop();
-    ctx.ui.setStatus('fusion', undefined);
+    ctx.ui.setStatus('sidekick', undefined);
   });
 }

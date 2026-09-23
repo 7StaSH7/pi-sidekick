@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/7StaSH7/pi-sidekick)](https://github.com/7StaSH7/pi-sidekick/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A [pi](https://github.com/earendil-works/pi) extension that lets your current model plan and review while a configurable OpenAI sidekick implements bounded tasks in a separate, persistent session.
+A [pi](https://github.com/earendil-works/pi) extension that lets your current model plan and review while a configurable OpenAI sidekick implements bounded tasks in a separate, persistent session. Inspired by [Cognition's Devin Fusion](https://cognition.com/blog/devin-fusion).
 
 ```text
 You ↔ Lead model
@@ -18,7 +18,7 @@ You ↔ Lead model
       Lead verifies the diff and results
 ```
 
-> **Naming:** the package is `pi-sidekick` and the runtime command is `/sidekick`. The internal tool remains `fusion_sidekick`; configuration, session paths, and state identifiers retain `fusion` naming so existing installations keep their data.
+> **Naming:** the package, `/sidekick` command, public `sidekick` tool, configuration, and new session storage all use the Sidekick name. Version 0.2.0 migrates existing Fusion data without deleting or rewriting the originals; see [Upgrade compatibility](#upgrade-compatibility).
 
 ## Why use it?
 
@@ -37,7 +37,7 @@ This is one persistent worker, not a multi-agent swarm. The lead decides when de
 1. Install the tagged release:
 
    ```bash
-   pi install git:github.com/7StaSH7/pi-sidekick@v0.1.1
+   pi install git:github.com/7StaSH7/pi-sidekick@v0.2.0
    ```
 
 2. In pi, reload extensions:
@@ -60,7 +60,7 @@ This is one persistent worker, not a multi-agent swarm. The lead decides when de
    results before reporting completion.
    ```
 
-New sessions enable delegation automatically when the configured model is available. `/sidekick off` persists for that lead session. The default is `openai-codex/gpt-5.6-luna` with `max` reasoning; **that model need not be available in your account**. Use `/sidekick setup` to select a model you actually have. An unavailable default blocks ordinary input until you run setup, enable a valid configuration, or turn Fusion off.
+New sessions enable delegation automatically when the configured model is available. `/sidekick off` persists for that lead session. The default is `openai-codex/gpt-5.6-luna` with `max` reasoning; **that model need not be available in your account**. Use `/sidekick setup` to select a model you actually have. An unavailable default blocks ordinary input until you run setup, enable a valid configuration, or turn Sidekick off.
 
 Already using a local checkout? Keep only one installation enabled; do not load the local and GitHub copies together. Local development still supports `pi install .`.
 
@@ -81,7 +81,7 @@ Setup puts each current value first, marked `(Current)`. Enter keeps it; cancell
 
 ## How it works
 
-1. The lead calls `fusion_sidekick` with a self-contained brief, constraints, and observable success criteria—not the entire lead conversation.
+1. The lead calls `sidekick` with a self-contained brief, constraints, and observable success criteria—not the entire lead conversation.
 2. The extension launches a native pi RPC child in the same working directory, with the chosen model and reasoning pinned.
 3. The child reads and edits files, runs tools, and forwards supported permission dialogs. Later briefs reuse its session.
 4. The lead receives the report, usage, and session path, then checks the actual changes and test evidence.
@@ -101,7 +101,7 @@ The theme-aware display keeps five recent actions, tracks parallel tool calls, a
 
 ### Configuration and sessions
 
-Configuration lives at `~/.pi/agent/fusion.json` (or inside `PI_CODING_AGENT_DIR`):
+Configuration lives at `~/.pi/agent/sidekick.json` (or inside `PI_CODING_AGENT_DIR`):
 
 ```json
 {
@@ -116,7 +116,15 @@ Configuration lives at `~/.pi/agent/fusion.json` (or inside `PI_CODING_AGENT_DIR
 
 Prefer `/sidekick setup` to editing JSON. The timeout accepts integers from **1 to 1440 minutes**; setup offers 15, 30, 60, 120, 240, and any currently configured value. Missing timeout values default to 60. The old boolean `animation` field is accepted for migration, ignored, and omitted on the next save.
 
-Private session files live under `~/.pi/agent/fusion/sessions/`. Resume preserves worker history; lead forks, clones, and tree navigation use checkpoint-aware branching rather than inheriting abandoned work. Session files may contain source code, commands, and tool results: do not publish them.
+Private session files live under `~/.pi/agent/sidekick/sessions/`. Resume preserves worker history; lead forks, clones, and tree navigation use checkpoint-aware branching rather than inheriting abandoned work. Session files may contain source code, commands, and tool results: do not publish them.
+
+### Upgrade compatibility
+
+On first load, if `sidekick.json` is absent, the extension validates `fusion.json` and atomically saves the same settings to `sidekick.json`. The old file is never changed or deleted. An existing `sidekick.json` takes precedence; if it is invalid, startup fails instead of falling back to old settings.
+
+Saved lead sessions keep their history. The extension reads both generations of state/stat records. When a legacy checkpoint is resumed, its `.jsonl` is validated inside `~/.pi/agent/fusion/sessions/` and copied to `~/.pi/agent/sidekick/sessions/` under the same basename only if no destination exists. The original log is not rewritten or removed; later restores never overwrite the migrated copy.
+
+After installing 0.2.0, run `/reload` before resuming an old lead session. Historical tool-call entries may still show `fusion_sidekick`; they are not rewritten, and no old tool alias is registered.
 
 ### Cost estimates, not savings claims
 

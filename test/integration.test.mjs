@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { RpcPeer } from '../rpc.mjs';
@@ -14,7 +14,7 @@ const SIDEKICK = { provider: 'openai-codex', id: 'gpt-5.6-luna', thinking: 'max'
 const ALT_SIDEKICK = { provider: 'openai', id: 'fixture-sidekick', thinking: 'high' };
 
 test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resume and fork', { timeout: 180000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-fusion-integration-'));
+  const dir = mkdtempSync(join(tmpdir(), 'pi-sidekick-integration-'));
   const agentDir = join(dir, 'agent');
   const cwd = join(dir, 'work');
   mkdirSync(agentDir); mkdirSync(cwd);
@@ -24,16 +24,18 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     defaultProvider: LEAD.provider, defaultModel: LEAD.id, defaultThinkingLevel: 'medium',
     retry: { enabled: false }, compaction: { enabled: false },
   }));
-  writeFileSync(join(agentDir, 'fusion.json'), JSON.stringify({ sidekick: SIDEKICK, animation: false, timeoutMinutes: 90 }));
-  const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_FUSION_TEST: '1', PI_FUSION_TEST_LOG: join(dir, 'events.jsonl') };
-  delete env.PI_FUSION_WORKER;
+  const legacyConfigFile = join(agentDir, 'fusion.json');
+  const legacyConfig = JSON.stringify({ sidekick: SIDEKICK, animation: false, timeoutMinutes: 90 });
+  writeFileSync(legacyConfigFile, legacyConfig);
+  const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_SIDEKICK_TEST: '1', PI_SIDEKICK_TEST_LOG: join(dir, 'events.jsonl') };
+  delete env.PI_SIDEKICK_WORKER;
   let peer;
   let notifications = [];
   let permissions = 0;
   let setupChoice = 'cancel';
   const setupMenus = [];
   const progress = [];
-  const fixtureEvents = () => readFileSync(env.PI_FUSION_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse);
+  const fixtureEvents = () => readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse);
   const open = async sessionFile => {
     peer = new RpcPeer('pi', ['--mode', 'rpc', '--offline', '--approve', '--no-extensions',
       '-e', join(project, 'index.ts'), '-e', join(project, 'test/fixture.ts'),
@@ -54,7 +56,7 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
           if (setupChoice === 'sixty') return { value: request.title.includes('task timeout') ? request.options.find(option => option.startsWith('60 minutes')) : request.options[0] };
         }
         if (request.method === 'select' && ['alternate', 'cancel-timeout'].includes(setupChoice)) {
-          if (request.title.includes('sidekick model')) return { value: request.options.find(option => option.startsWith('openai/')) };
+          if (request.title.includes('Sidekick setup · model')) return { value: request.options.find(option => option.startsWith('openai/')) };
           if (request.title.includes('reasoning')) return { value: 'high' };
           if (request.title.includes('task timeout')) {
             return setupChoice === 'cancel-timeout' ? { cancelled: true } : { value: request.options.find(option => option.startsWith('90 minutes')) };
@@ -79,15 +81,17 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
   try {
     const initialState = await open();
     const initialEntries = await peer.request('get_entries');
-    const initialFusionState = initialEntries.entries.findLast(e => e.type === 'custom' && e.customType === STATE);
+    const initialSidekickState = initialEntries.entries.findLast(e => e.type === 'custom' && e.customType === STATE);
     const commands = await peer.request('get_commands');
     assert(commands.commands.some(c => c.name === 'sidekick'), JSON.stringify(commands));
     assert(!commands.commands.some(c => c.name === 'fusion'), JSON.stringify(commands));
     assert.equal(initialState.model.provider, LEAD.provider);
     assert.equal(initialState.model.id, LEAD.id);
     assert.equal(initialState.thinkingLevel, LEAD.thinking);
-    assert.equal(initialFusionState?.data.enabled, true, 'new sessions default to Fusion ON');
-    assert.equal(existsSync(env.PI_FUSION_TEST_LOG), false, 'auto-on must not spawn Luna');
+    assert.equal(initialSidekickState?.data.enabled, true, 'new sessions default to Sidekick ON');
+    assert.equal(existsSync(env.PI_SIDEKICK_TEST_LOG), false, 'auto-on must not spawn the worker');
+    assert.deepEqual(JSON.parse(readFileSync(join(agentDir, 'sidekick.json'), 'utf8')), { sidekick: SIDEKICK, timeoutMinutes: 90 });
+    assert.equal(readFileSync(legacyConfigFile, 'utf8'), legacyConfig, 'legacy config remains untouched');
 
     const activityRunning = peer.waitForEvent(e => e.type === 'tool_execution_update' && e.toolName === TOOL
       && JSON.stringify(e.partialResult).includes('▶ read')
@@ -177,10 +181,12 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     assert(statsEntries.some(record => record.outcome === 'cancelled'));
     assert(!statsEntries.some(record => record.outcome === 'error'), 'forked stats must exclude abandoned failures');
     assert.equal(new Set(statsEntries.map(record => record.callId)).size, statsEntries.length, 'each delegation gets one cost record');
+    const legacyStatsRecord = { ...statsEntries[0], callId: `legacy-${statsEntries[0].callId}` };
+    await peer.request('prompt', { message: `/fixture-legacy-stats ${JSON.stringify(legacyStatsRecord)}` });
     await peer.request('prompt', { message: '/sidekick stats' });
-    assert(notifications.some(n => n.includes('Fusion delegated cost estimates') && n.includes('75.0% lower')));
+    assert(notifications.some(n => n.includes(`Calls: ${statsEntries.length + 1}`) && n.includes('Sidekick delegated cost estimates') && n.includes('75.0% lower')));
 
-    const events = readFileSync(env.PI_FUSION_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse);
+    const events = readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse);
     const modelCalls = events.filter(e => e.model);
     assert(modelCalls.some(e => e.child));
     for (const call of modelCalls) {
@@ -192,7 +198,7 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     }
     assert(events.some(e => e.child && e.hook === 'read'), 'native child tool_call hooks must run');
     const childPrompts = modelCalls.filter(e => e.child).map(e => e.prompt);
-    assert(childPrompts.every(p => p.startsWith('Fusion brief')), 'do not forward the lead conversation');
+    assert(childPrompts.every(p => p.startsWith('Sidekick brief')), 'do not forward the lead conversation');
 
     await peer.request('set_thinking_level', { level: 'high' });
     const unchangedLead = await peer.request('get_state');
@@ -219,24 +225,25 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     }
 
     await peer.request('prompt', { message: '/sidekick off' });
-    assert(notifications.some(n => n.includes('Fusion OFF')));
+    assert(notifications.some(n => n.includes('Sidekick OFF')));
     await peer.request('prompt', { message: '/sidekick on' });
-    assert(notifications.some(n => n.includes('Fusion ON')));
+    assert(notifications.some(n => n.includes('Sidekick ON')));
     await peer.request('prompt', { message: '/sidekick off' });
     const offSessionFile = (await peer.request('get_state')).sessionFile;
     await peer.close();
     await open(offSessionFile);
     const reopenedEntries = await peer.request('get_entries');
-    const reopenedFusionState = reopenedEntries.entries.findLast(e => e.type === 'custom' && e.customType === STATE);
-    assert.equal(reopenedFusionState?.data.enabled, false, 'explicit off persists across reload');
-    const configFile = join(agentDir, 'fusion.json');
-    const legacyConfig = readFileSync(configFile, 'utf8');
-    assert.match(legacyConfig, /"animation":false/);
+    const reopenedSidekickState = reopenedEntries.entries.findLast(e => e.type === 'custom' && e.customType === STATE);
+    assert.equal(reopenedSidekickState?.data.enabled, false, 'explicit off persists across reload');
+    const configFile = join(agentDir, 'sidekick.json');
+    const currentConfig = readFileSync(configFile, 'utf8');
+    assert.doesNotMatch(currentConfig, /animation/);
+    assert.equal(readFileSync(legacyConfigFile, 'utf8'), legacyConfig);
     await peer.request('prompt', { message: '/sidekick setup' });
-    assert.equal(readFileSync(configFile, 'utf8'), legacyConfig, 'cancelled setup must preserve legacy config');
+    assert.equal(readFileSync(configFile, 'utf8'), currentConfig, 'cancelled setup must preserve Sidekick config');
     setupChoice = 'cancel-timeout';
     await peer.request('prompt', { message: '/sidekick setup' });
-    assert.equal(readFileSync(configFile, 'utf8'), legacyConfig, 'cancelling timeout selection must preserve config and history');
+    assert.equal(readFileSync(configFile, 'utf8'), currentConfig, 'cancelling timeout selection must preserve config and history');
     setupChoice = 'alternate';
     setupMenus.length = 0;
     await peer.request('prompt', { message: '/sidekick setup' });
@@ -277,10 +284,58 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     assert.equal(resumedLead.model.provider, LEAD.provider);
     assert.equal(resumedLead.model.id, LEAD.id);
     await prompt('ALT resumed');
-    const alternateCalls = readFileSync(env.PI_FUSION_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse)
+    const alternateCalls = readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse)
       .filter(event => event.child && event.provider === ALT_SIDEKICK.provider && event.model === ALT_SIDEKICK.id);
     assert(alternateCalls.length >= 2, 'setup and resume must launch the selected sidekick');
     assert(alternateCalls.every(event => event.thinking === ALT_SIDEKICK.thinking));
+
+    const leadSessionFile = (await peer.request('get_state')).sessionFile;
+    const originalCheckpoint = await checkpoint();
+    const legacySessions = join(agentDir, 'fusion', 'sessions');
+    mkdirSync(legacySessions, { recursive: true });
+    const legacyFile = join(legacySessions, `legacy-${basename(originalCheckpoint.file)}`);
+    copyFileSync(originalCheckpoint.file, legacyFile);
+    const legacyBytes = readFileSync(legacyFile);
+    const seedLegacyCheckpoint = file => peer.request('prompt', {
+      message: `/fixture-legacy-checkpoint ${JSON.stringify({ file, leaf: originalCheckpoint.leaf })}`,
+    });
+    await seedLegacyCheckpoint(legacyFile);
+    await peer.close();
+    await open(leadSessionFile);
+    const migratedReport = await prompt('READ legacy checkpoint');
+    assert.match(migratedReport, /offline fixture content/, migratedReport);
+    assert.match(migratedReport, /history=[2-9][0-9]*/, migratedReport);
+    const mappedFile = join(agentDir, 'sidekick', 'sessions', basename(legacyFile));
+    assert(existsSync(mappedFile));
+    assert.equal((await checkpoint()).file, mappedFile);
+    assert.deepEqual(readFileSync(legacyFile), legacyBytes, 'legacy session log remains unchanged');
+    const migratedBytes = readFileSync(mappedFile);
+
+    await seedLegacyCheckpoint(legacyFile);
+    await peer.close();
+    await open(leadSessionFile);
+    const repeatedReport = await prompt('READ repeated legacy checkpoint');
+    assert.match(repeatedReport, /offline fixture content/, repeatedReport);
+    assert.deepEqual(readFileSync(mappedFile), migratedBytes, 'repeated restore must not overwrite the newer copy');
+    assert.deepEqual(readFileSync(legacyFile), legacyBytes, 'repeated restore must not rewrite the source');
+
+    const outsideFile = join(dir, 'outside.jsonl');
+    copyFileSync(legacyFile, outsideFile);
+    await seedLegacyCheckpoint(outsideFile);
+    await peer.close();
+    await open(leadSessionFile);
+    const outsideReport = await prompt('READ external legacy checkpoint');
+    assert.match(outsideReport, /outside its session directory/, outsideReport);
+    assert.equal(existsSync(join(agentDir, 'sidekick', 'sessions', basename(outsideFile))), false);
+
+    const escapedLink = join(legacySessions, 'escaped.jsonl');
+    symlinkSync(outsideFile, escapedLink);
+    await seedLegacyCheckpoint(escapedLink);
+    await peer.close();
+    await open(leadSessionFile);
+    const symlinkReport = await prompt('READ symlink-escaped legacy checkpoint');
+    assert.match(symlinkReport, /outside its session directory/, symlinkReport);
+    assert.equal(existsSync(join(agentDir, 'sidekick', 'sessions', basename(escapedLink))), false);
   } finally {
     await peer?.close();
     rmSync(dir, { recursive: true, force: true });
@@ -288,7 +343,7 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
 });
 
 test('native pi: missing auth fails closed until explicit off', { timeout: 60000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-fusion-startup-failure-'));
+  const dir = mkdtempSync(join(tmpdir(), 'pi-sidekick-startup-failure-'));
   const agentDir = join(dir, 'agent');
   const cwd = join(dir, 'work');
   mkdirSync(agentDir); mkdirSync(cwd);
@@ -301,11 +356,11 @@ test('native pi: missing auth fails closed until explicit off', { timeout: 60000
     ...process.env,
     PI_CODING_AGENT_DIR: agentDir,
     PI_OFFLINE: '1',
-    PI_FUSION_TEST: '1',
-    PI_FUSION_TEST_NO_AUTH: '1',
-    PI_FUSION_TEST_LOG: join(dir, 'events.jsonl'),
+    PI_SIDEKICK_TEST: '1',
+    PI_SIDEKICK_TEST_NO_AUTH: '1',
+    PI_SIDEKICK_TEST_LOG: join(dir, 'events.jsonl'),
   };
-  delete env.PI_FUSION_WORKER;
+  delete env.PI_SIDEKICK_WORKER;
   let peer;
   const notifications = [];
   try {
@@ -319,7 +374,7 @@ test('native pi: missing auth fails closed until explicit off', { timeout: 60000
       },
     });
     await peer.request('get_state');
-    assert(notifications.some(n => n.includes('Fusion startup failed')), notifications.join('\\n'));
+    assert(notifications.some(n => n.includes('Sidekick startup failed')), notifications.join('\\n'));
     assert(notifications.some(n => n.includes('Input is blocked')), notifications.join('\\n'));
 
     await peer.request('prompt', { message: '/sidekick reset' });
@@ -329,13 +384,13 @@ test('native pi: missing auth fails closed until explicit off', { timeout: 60000
 
     await peer.request('prompt', { message: 'READ blocked' });
     await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(existsSync(env.PI_FUSION_TEST_LOG), false, 'blocked input must not reach any model');
+    assert.equal(existsSync(env.PI_SIDEKICK_TEST_LOG), false, 'blocked input must not reach any model');
 
     await peer.request('prompt', { message: '/sidekick off' });
     const entries = await peer.request('get_entries');
     const state = entries.entries.findLast(e => e.type === 'custom' && e.customType === STATE);
     assert.equal(state?.data.enabled, false);
-    assert(notifications.some(n => n.includes('Fusion OFF')), notifications.join('\\n'));
+    assert(notifications.some(n => n.includes('Sidekick OFF')), notifications.join('\\n'));
   } finally {
     await peer?.close();
     rmSync(dir, { recursive: true, force: true });

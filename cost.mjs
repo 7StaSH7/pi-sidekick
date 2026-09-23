@@ -144,7 +144,7 @@ export function formatTaskCost(record, compact = false) {
 
 export function formatStats(records) {
   const unique = dedupeDelegationRecords(records);
-  if (unique.length === 0) return 'No delegated Fusion cost history in this branch. Older sessions have no retroactive estimate.';
+  if (unique.length === 0) return 'No delegated Sidekick cost history in this branch. Older sessions have no retroactive estimate.';
   const estimates = unique.map(record => ({ record, comparison: compareCosts(record) }));
   const comparable = estimates.filter(item => item.comparison.available);
   const unavailable = unique.length - comparable.length;
@@ -153,7 +153,7 @@ export function formatStats(records) {
     return counts;
   }, {});
   const outcomeText = Object.entries(outcomes).map(([name, count]) => `${name}: ${count}`).join(', ');
-  const header = `Fusion delegated cost estimates (delegated work only)\nCalls: ${unique.length} · comparable: ${comparable.length} · unavailable: ${unavailable}\nOutcomes: ${outcomeText}`;
+  const header = `Sidekick delegated cost estimates (delegated work only)\nCalls: ${unique.length} · comparable: ${comparable.length} · unavailable: ${unavailable}\nOutcomes: ${outcomeText}`;
   if (comparable.length === 0) return `${header}\nNo comparable calls; no aggregate baseline is applied to unavailable calls.`;
   const sidekickCost = comparable.reduce((sum, item) => sum + item.comparison.sidekickCost, 0);
   const leadCost = comparable.reduce((sum, item) => sum + item.comparison.leadCost, 0);

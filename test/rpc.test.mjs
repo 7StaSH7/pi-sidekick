@@ -168,7 +168,7 @@ test('Linux close kills descendants after leader exits', { skip: process.platfor
 });
 
 test('spawn failure rejects work and closes', async () => {
-  const rpc = new RpcPeer('/no-such-pi-fusion-command', []);
+  const rpc = new RpcPeer('/no-such-pi-sidekick-command', []);
   await assert.rejects(rpc.request('echo'), /RPC/);
   await rpc.close();
   assert.equal(rpc.alive, false);

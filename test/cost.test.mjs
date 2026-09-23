@@ -58,5 +58,5 @@ test('formats branch totals with deduplication, mixed rates and outcomes', () =>
   assert.match(formatStats(records), /cancelled: 1/);
   assert.match(formatStats(records), /error: 1/);
   assert.match(formatStats(records), /Unavailable calls are excluded/);
-  assert.equal(formatStats([]), 'No delegated Fusion cost history in this branch. Older sessions have no retroactive estimate.');
+  assert.equal(formatStats([]), 'No delegated Sidekick cost history in this branch. Older sessions have no retroactive estimate.');
 });
