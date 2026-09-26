@@ -4,6 +4,7 @@ Notable changes are recorded here. Releases use [Semantic Versioning](https://se
 
 ## Unreleased
 
+- Allow selecting authenticated models from any pi-registered provider, including custom providers, while keeping exact model/reasoning pinning and no fallback.
 - Read saved stats and task transcripts without opening, migrating, or rewriting session files; report incomplete history and preserve task reports when transcripts are unavailable.
 - Show two-line estimated cost comparisons, duration totals, and branch savings in the footer while Sidekick is on or off.
 

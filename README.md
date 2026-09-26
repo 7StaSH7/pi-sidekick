@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/7StaSH7/pi-sidekick)](https://github.com/7StaSH7/pi-sidekick/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A [pi](https://github.com/earendil-works/pi) extension that lets your current model plan and review while a configurable OpenAI sidekick implements bounded tasks in a separate, persistent session. Inspired by [Cognition's Devin Fusion](https://cognition.com/blog/devin-fusion).
+A [pi](https://github.com/earendil-works/pi) extension that lets your current model plan and review while a configurable sidekick model implements bounded tasks in a separate, persistent session. Inspired by [Cognition's Devin Fusion](https://cognition.com/blog/devin-fusion).
 
 ```text
 You ↔ Lead model
@@ -24,7 +24,7 @@ You ↔ Lead model
 
 - **Keep your lead.** Delegation never changes the lead model or reasoning level.
 - **Continue, don't restart.** The sidekick retains context between briefs, with checkpoints that follow lead-session branching.
-- **Choose the worker.** Select an authenticated `openai-codex` or `openai` model, reasoning level, and timeout. No silent model fallback.
+- **Choose the worker.** Select an authenticated model from any provider registered in pi, including custom providers, plus its supported reasoning level and timeout. No silent model fallback.
 - **See the work.** Live tool activity, permission prompts, returned reports, and saved sessions stay accessible.
 - **Inspect the cost.** Delegated usage and transparent estimates—not claims of measured savings or equal quality.
 
@@ -32,7 +32,7 @@ This is one persistent worker, not a multi-agent swarm. The lead decides when de
 
 ## Quick start
 
-**Requirements:** Node.js 22.19+, pi 0.87.1 or newer, a trusted project, and an authenticated OpenAI provider. CI tests pi 0.87.1 on Linux; other versions and platforms are not part of the current test matrix.
+**Requirements:** Node.js 22.19+, pi 0.87.1 or newer, a trusted project, and an authenticated provider with a registered model. CI tests pi 0.87.1 on Linux; other versions and platforms are not part of the current test matrix.
 
 1. Install the tagged release:
 
@@ -46,7 +46,7 @@ This is one persistent worker, not a multi-agent swarm. The lead decides when de
    /reload
    ```
 
-3. If you have not authenticated a sidekick provider, use `/login` and choose OpenAI Codex or OpenAI. Then configure the worker:
+3. If you have not authenticated a sidekick provider, use `/login` and choose a provider available in your pi setup. Then configure the worker:
 
    ```text
    /sidekick setup
@@ -83,7 +83,7 @@ Setup puts each current value first, marked `(Current)`. Enter keeps it; cancell
 ## How it works
 
 1. The lead calls `sidekick` with a self-contained brief, constraints, and observable success criteria—not the entire lead conversation.
-2. The extension launches a native pi RPC child in the same working directory, with the chosen model and reasoning pinned.
+2. The extension launches a native pi RPC child in the same working directory, with the chosen provider, model, and reasoning pinned.
 3. The child reads and edits files, runs tools, and forwards supported permission dialogs. Later briefs reuse its session.
 4. The lead receives the report, usage, and session path, then checks the actual changes and test evidence.
 

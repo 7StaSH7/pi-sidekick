@@ -39,9 +39,18 @@ test('strict Sidekick config, timeout migration and launch snapshot validation',
   assert.throws(() => validateSidekickConfig({ ...DEFAULT_SIDEKICK_CONFIG, extra: true }));
   assert.throws(() => validateSidekickConfig({ sidekick, animation: 'false' }));
   assert.throws(() => validateSidekickConfig({ sidekick, timeoutMinutes: undefined }));
-  assert.throws(() => validateSidekickSelection({ provider: 'anthropic', id: 'bad', thinking: 'max' }));
   assert.throws(() => validateSidekickSelection({ provider: 'openai', id: 'bad model', thinking: 'max' }));
   assert.throws(() => parseLaunchSidekick('{"provider":"openai"}'));
+});
+
+test('provider identifiers accept all registered names structurally and reject malformed strings', () => {
+  for (const provider of ['anthropic', 'google', 'openrouter', 'custom-provider']) {
+    const selection = { provider, id: 'model-id', thinking: 'medium' };
+    assert.deepEqual(validateSidekickSelection(selection), selection);
+  }
+  for (const provider of ['', null, undefined, 42, 'has whitespace', 'bad\nprovider', 'p'.repeat(201)]) {
+    assert.throws(() => validateSidekickSelection({ provider, id: 'model-id', thinking: 'medium' }), /provider id/);
+  }
 });
 
 test('restore latest state marker from active branch, including legacy state, off and reset', () => {

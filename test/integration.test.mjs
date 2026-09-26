@@ -425,6 +425,68 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
   }
 });
 
+test('native pi: setup selects and runs an authenticated non-OpenAI sidekick model', { timeout: 60000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-sidekick-provider-setup-'));
+  const agentDir = join(dir, 'agent');
+  const cwd = join(dir, 'work');
+  mkdirSync(agentDir); mkdirSync(cwd);
+  writeFileSync(join(cwd, 'input.txt'), 'provider-neutral offline fixture content');
+  const env = {
+    ...process.env,
+    PI_CODING_AGENT_DIR: agentDir,
+    PI_OFFLINE: '1',
+    PI_SIDEKICK_TEST: '1',
+    PI_SIDEKICK_TEST_LOG: join(dir, 'events.jsonl'),
+  };
+  delete env.PI_SIDEKICK_WORKER;
+  let peer;
+  const menus = [];
+  const prompt = async message => {
+    const settled = peer.waitForEvent(event => event.type === 'agent_settled', { timeoutMs: 30000 });
+    void settled.catch(() => {});
+    await peer.request('prompt', { message });
+    await settled;
+    return (await peer.request('get_last_assistant_text')).text;
+  };
+  try {
+    peer = new RpcPeer('pi', ['--mode', 'rpc', '--offline', '--approve', '--no-extensions',
+      '-e', join(project, 'index.ts'), '-e', join(project, 'test/fixture.ts'),
+      '--provider', LEAD.provider, '--model', LEAD.id, '--thinking', LEAD.thinking], {
+      cwd, env,
+      onUi: request => {
+        if (request.method !== 'select') return { cancelled: true };
+        menus.push(request);
+        if (request.title.includes('Sidekick setup · model')) {
+          return { value: request.options.find(option => option.startsWith('anthropic/fixture-lead')) };
+        }
+        if (request.title.includes('reasoning')) return { value: 'high' };
+        if (request.title.includes('task timeout')) return { value: request.options.find(option => option.startsWith('60 minutes')) };
+        return { cancelled: true };
+      },
+    });
+    await peer.request('get_state');
+    await peer.request('prompt', { message: '/sidekick setup' });
+    assert.match(menus[0].options.find(option => option.startsWith('anthropic/fixture-lead')), /anthropic\/fixture-lead/);
+    assert.equal(menus[1].options.includes('high'), true);
+    assert.deepEqual(JSON.parse(readFileSync(join(agentDir, 'sidekick.json'), 'utf8')), {
+      sidekick: { provider: 'anthropic', id: 'fixture-lead', thinking: 'high' }, timeoutMinutes: 60,
+    });
+
+    const report = await prompt('READ using the selected provider');
+    assert.match(report, /provider-neutral offline fixture content/);
+    const events = readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse);
+    assert(events.some(event => event.child && event.provider === 'anthropic' && event.model === 'fixture-lead' && event.thinking === 'high'),
+      'offline worker call must use the exact selected provider, model and reasoning');
+    const result = (await peer.request('get_entries')).entries.findLast(entry => entry.type === 'message'
+      && entry.message.role === 'toolResult' && entry.message.toolName === TOOL);
+    assert.equal(result.message.details.costRecord.sidekick.provider, 'anthropic');
+    assert.equal(result.message.details.costRecord.sidekick.id, 'fixture-lead');
+  } finally {
+    await peer?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('native pi: missing auth fails closed until explicit off', { timeout: 60000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-sidekick-startup-failure-'));
   const agentDir = join(dir, 'agent');

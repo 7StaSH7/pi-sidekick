@@ -1,7 +1,6 @@
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 
-export const SIDEKICK_PROVIDERS = Object.freeze(['openai-codex', 'openai']);
 export const THINKING_LEVELS = Object.freeze(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 export const DEFAULT_TIMEOUT_MINUTES = 60;
 export const MAX_TIMEOUT_MINUTES = 1440;
@@ -37,7 +36,7 @@ function modelId(value) {
 
 export function validateSidekickSelection(value) {
   if (!plainObject(value) || !exactKeys(value, ['provider', 'id', 'thinking'])) throw new Error('Invalid Sidekick model selection.');
-  if (!SIDEKICK_PROVIDERS.includes(value.provider)) throw new Error(`Unsupported Sidekick provider: ${String(value.provider)}. Use openai-codex or openai.`);
+  if (!modelId(value.provider)) throw new Error('Invalid Sidekick provider id.');
   if (!modelId(value.id)) throw new Error('Invalid Sidekick model id.');
   if (!THINKING_LEVELS.includes(value.thinking)) throw new Error(`Invalid Sidekick reasoning level: ${String(value.thinking)}.`);
   return { provider: value.provider, id: value.id, thinking: value.thinking };

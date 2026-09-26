@@ -318,7 +318,7 @@ export default function sidekick(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL,
     label: 'Sidekick',
-    description: 'Delegate a bounded task to the persistent configured OpenAI sidekick. Call alone, never alongside other tools. Supply a self-contained brief, constraints and success criteria. Returns its report (at most 2000 lines / 50KB) and session location. The lead must review actual changes. Fails rather than switching models.',
+    description: 'Delegate a bounded task to the persistent configured sidekick model. Call alone, never alongside other tools. Supply a self-contained brief, constraints and success criteria. Returns its report (at most 2000 lines / 50KB) and session location. The lead must review actual changes. Fails rather than switching models.',
     promptSnippet: 'Delegate implementation or scoped exploration to the configured sidekick',
     renderCall(args, theme, context) {
       return new Text(callText(args, context.expanded, theme), 0, 0);
@@ -513,9 +513,9 @@ export default function sidekick(pi: ExtensionAPI) {
       return ordered[index];
     };
     const models = ctx.modelRegistry.getAvailable()
-      .filter(model => ['openai-codex', 'openai'].includes(model.provider) && ctx.modelRegistry.hasConfiguredAuth(model))
+      .filter(model => ctx.modelRegistry.hasConfiguredAuth(model))
       .sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
-    if (models.length === 0) throw new Error('No authenticated openai-codex/openai sidekick models are available. Configure /login first.');
+    if (models.length === 0) throw new Error('No authenticated provider models are available. Configure a provider with /login first.');
     const modelChoices = models.map(model => `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` · ${model.name}` : ''}`);
     const currentModelIndex = models.findIndex(model => model.provider === config.sidekick.provider && model.id === config.sidekick.id);
     const modelChoice = await selectCurrent(
