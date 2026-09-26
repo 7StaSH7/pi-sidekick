@@ -83,15 +83,17 @@ function stage(state, text) {
   return `${state.name} · ${text}`;
 }
 
-export function createActivityState(name = 'sidekick') {
+export function createActivityState(name = 'sidekick', now = performance.now()) {
   const safeName = clean(name, MAX_NAME_LENGTH) || 'sidekick';
-  return { name: safeName, stage: stage({ name: safeName }, 'starting'), completed: 0, actions: [], byId: new Map() };
+  return { name: safeName, stage: stage({ name: safeName }, 'starting'), startedAt: now, completed: 0, actions: [], history: [], byId: new Map() };
 }
 
-export function resetActivity(state) {
+export function resetActivity(state, now = performance.now()) {
   state.stage = stage(state, 'starting');
+  state.startedAt = now;
   state.completed = 0;
   state.actions.length = 0;
+  state.history.length = 0;
   state.byId.clear();
   return state;
 }
@@ -158,6 +160,8 @@ export function applyActivityEvent(state, event, now = Date.now()) {
       state.byId.set(id, action);
       state.actions = state.actions.filter(item => item.id !== id);
       state.actions.push(action);
+      // ponytail: retain every action in memory; paginate if very long tasks make UI costly.
+      state.history.push(action);
       trimActions(state);
       state.stage = stage(state, 'executing actions');
       return true;
@@ -169,6 +173,7 @@ export function applyActivityEvent(state, event, now = Date.now()) {
         action = { id, label: describeTool(event.toolName), status: 'running', startedAt: now };
         state.byId.set(id, action);
         state.actions.push(action);
+        state.history.push(action);
         trimActions(state);
       }
       if (action.status !== 'running') return false;
@@ -184,21 +189,31 @@ export function applyActivityEvent(state, event, now = Date.now()) {
   }
 }
 
-function duration(value) {
-  if (value < 1000) return `${value}ms`;
-  if (value < 60000) return `${(value / 1000).toFixed(1).replace(/\.0$/, '')}s`;
-  const minutes = Math.floor(value / 60000);
-  return `${minutes}m ${Math.round((value % 60000) / 1000)}s`;
+export function formatDuration(value) {
+  if (!Number.isFinite(value)) return '0ms';
+  const rounded = Math.max(0, Math.round(value));
+  if (rounded < 1000) return `${rounded}ms`;
+  if (rounded < 60000) return `${(rounded / 1000).toFixed(1).replace(/\.0$/, '')}s`;
+  const minutes = Math.floor(rounded / 60000);
+  return `${minutes}m ${Math.floor((rounded % 60000) / 1000)}s`;
+}
+
+export function activityDuration(state, now = performance.now()) {
+  return Math.max(0, now - state.startedAt);
 }
 
 function row(action) {
   const icon = action.status === 'running' ? '▶' : action.status === 'error' ? '✗' : '✓';
-  const suffix = action.status === 'running' ? ' · now' : action.durationMs === undefined ? '' : ` · ${duration(action.durationMs)}`;
+  const suffix = action.status === 'running' ? ' · now' : action.durationMs === undefined ? '' : ` · ${formatDuration(action.durationMs)}`;
   return clean(`${icon} ${action.label}${suffix}`, MAX_LABEL_LENGTH + 25);
 }
 
-export function formatActivity(state, frame) {
+export function formatActivityActions(actions) {
+  return actions.map(row).join('\n');
+}
+
+export function formatActivity(state, frame, now = performance.now()) {
   const spinner = BRAILLE_FRAMES[(frame ?? 0) % BRAILLE_FRAMES.length];
   const detail = clean(`${state.stage} · completed: ${state.completed}`, MAX_NAME_LENGTH + MAX_STAGE_LENGTH + 35);
-  return [`${spinner} Working`, detail, ...state.actions.map(row)].join('\n');
+  return [`${spinner} Working · ${formatDuration(activityDuration(state, now))}`, detail, ...state.actions.map(row)].join('\n');
 }

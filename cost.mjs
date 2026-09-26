@@ -1,3 +1,5 @@
+import { formatDuration } from './activity.mjs';
+
 export const COST_CATEGORIES = Object.freeze(['input', 'output', 'cacheRead', 'cacheWrite']);
 const RATE_KEYS = COST_CATEGORIES;
 
@@ -101,13 +103,14 @@ export function compareCosts({ usage, lead, sidekick }) {
   };
 }
 
-export function makeDelegationRecord(callId, lead, sidekick, usage, outcome) {
+export function makeDelegationRecord(callId, lead, sidekick, usage, outcome, durationMs) {
   return {
     callId: String(callId),
     lead: snapshotModel(lead),
     sidekick: snapshotModel(sidekick),
     usage: snapshotUsage(usage),
     outcome,
+    ...(Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs: Math.round(durationMs) } : {}),
   };
 }
 
@@ -136,33 +139,130 @@ export function formatTaskCost(record, compact = false) {
   const comparison = compareCosts(record);
   const outcome = record.outcome ?? 'unknown';
   if (!comparison.available) {
-    return `Estimated delegated cost: unavailable (${comparison.reason}). Outcome: ${outcome}.`;
+    const unavailable = `Estimated cost comparison unavailable (${comparison.reason}). Outcome: ${outcome}.`;
+    return compact ? unavailable : `${unavailable} Excludes lead planning/review; tokenization, context and retries differ. Subscription billing is not represented by API-rate estimates.`;
   }
-  const summary = `Estimated delegated cost: ${money(comparison.sidekickCost)} sidekick vs ${money(comparison.leadCost)} at lead rates; ${comparisonText(comparison)}.`;
+  const summary = `Estimated costs: ${money(comparison.sidekickCost)} Sidekick · ${money(comparison.leadCost)} lead-equivalent for the same tokens · ${comparisonText(comparison)}.`;
   return compact ? summary : `${summary} Outcome: ${outcome}. Excludes lead planning/review; tokenization, context and retries differ. Subscription billing is not represented by API-rate estimates.`;
 }
 
-export function formatStats(records) {
+export function formatCompactTaskCost(record) {
+  const comparison = compareCosts(record);
+  const sidekickCost = comparison.available ? comparison.sidekickCost : comparison.sidekick?.available ? comparison.sidekick.cost : undefined;
+  const leadCost = comparison.available ? comparison.leadCost : comparison.lead?.available ? comparison.lead.cost : undefined;
+  const headline = `Sidekick ${sidekickCost === undefined ? 'unavailable' : money(sidekickCost)} · Lead equivalent ${leadCost === undefined ? 'unavailable' : money(leadCost)}`;
+  if (!comparison.available) return `${headline}\n≈ Estimate unavailable`;
+  if (comparison.difference > 0) return `${headline}\n≈ Saved ${money(comparison.difference)} (${comparison.percentage.toFixed(1)}%) · API-rate estimate`;
+  if (comparison.difference < 0) return `${headline}\n≈ Extra cost ${money(-comparison.difference)} (${Math.abs(comparison.percentage).toFixed(1)}%) · API-rate estimate`;
+  return `${headline}\n≈ No estimated difference · API-rate estimate`;
+}
+
+function addFinite(sum, value) {
+  const total = sum + value;
+  return Number.isFinite(total) ? total : undefined;
+}
+
+function totals(records) {
   const unique = dedupeDelegationRecords(records);
-  if (unique.length === 0) return 'No delegated Sidekick cost history in this branch. Older sessions have no retroactive estimate.';
   const estimates = unique.map(record => ({ record, comparison: compareCosts(record) }));
   const comparable = estimates.filter(item => item.comparison.available);
-  const unavailable = unique.length - comparable.length;
+  let sidekickCost = 0;
+  let leadCost = 0;
+  let aggregateAvailable = true;
+  for (const { comparison } of comparable) {
+    const nextSidekick = addFinite(sidekickCost, comparison.sidekickCost);
+    const nextLead = addFinite(leadCost, comparison.leadCost);
+    if (nextSidekick === undefined || nextLead === undefined) aggregateAvailable = false;
+    else { sidekickCost = nextSidekick; leadCost = nextLead; }
+  }
+  let difference;
+  let percentage;
+  if (aggregateAvailable && comparable.length) {
+    difference = leadCost - sidekickCost;
+    percentage = leadCost === 0 ? 0 : difference / leadCost * 100;
+    aggregateAvailable = Number.isFinite(difference) && Number.isFinite(percentage);
+  }
+  const knownDurations = unique.filter(record => typeof record.durationMs === 'number' && Number.isFinite(record.durationMs) && record.durationMs >= 0);
+  let durationMs = 0;
+  let durationAvailable = true;
+  for (const { durationMs: value } of knownDurations) {
+    const next = addFinite(durationMs, value);
+    if (next === undefined) durationAvailable = false;
+    else durationMs = next;
+  }
+  return {
+    unique,
+    comparable,
+    unavailable: unique.length - comparable.length,
+    sidekickCost,
+    leadCost,
+    aggregateAvailable,
+    difference,
+    percentage,
+    knownDurationCount: knownDurations.length,
+    unknownDurationCount: unique.length - knownDurations.length,
+    durationMs,
+    durationAvailable,
+  };
+}
+
+function totalComparison(difference, percentage) {
+  const text = difference > 0
+    ? `estimated ${money(difference)} lower (${percentage.toFixed(1)}% lower)`
+    : difference < 0
+      ? `estimated ${money(-difference)} higher (${Math.abs(percentage).toFixed(1)}% higher)`
+      : 'estimated difference $0.00 (0.0%)';
+  return { difference, text };
+}
+
+function unavailableMarker(count) {
+  return count > 0 ? ` · +${count} unavailable` : '';
+}
+
+export function formatCompactSavings(records) {
+  const summary = totals(records);
+  if (summary.unique.length === 0) return undefined;
+  const suffix = summary.comparable.length > 0 ? unavailableMarker(summary.unavailable) : '';
+  if (!summary.aggregateAvailable || summary.comparable.length === 0) return `estimate unavailable${suffix}`;
+  const { difference } = summary;
+  if (difference > 0) return `≈ saved ${money(difference)}${suffix}`;
+  if (difference < 0) return `≈ extra ${money(-difference)}${suffix}`;
+  return `≈ no difference${suffix}`;
+}
+
+function plural(count, singular, pluralForm = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+function scanWarnings(malformedLines, unreadableFiles) {
+  if (malformedLines === 0 && unreadableFiles === 0) return '';
+  return `\nRead-only scan warnings: ${plural(malformedLines, 'malformed JSONL line')} · ${plural(unreadableFiles, 'unreadable file')}; saved-history totals may be incomplete.`;
+}
+
+function durationSummary(summary) {
+  const { knownDurationCount: known, unknownDurationCount: unknown } = summary;
+  const total = known === 0 ? 'not recorded'
+    : summary.durationAvailable ? formatDuration(summary.durationMs) : 'unavailable (numeric range exceeded)';
+  return `\nDuration: ${total} · ${known} known · ${unknown} unknown`;
+}
+
+export function formatStats(records, options = {}) {
+  const scope = options.scope ?? 'this branch';
+  const malformedLines = options.malformedLines ?? 0;
+  const unreadableFiles = options.unreadableFiles ?? options.skipped ?? 0;
+  const warning = scanWarnings(malformedLines, unreadableFiles);
+  const summary = totals(records);
+  const { unique, comparable, unavailable } = summary;
+  const emptyScope = scope === 'this branch' ? 'in this branch' : `in ${scope}`;
+  if (unique.length === 0) return `No delegated Sidekick cost history ${emptyScope}. Older sessions have no retroactive estimate.${warning}`;
   const outcomes = unique.reduce((counts, record) => {
     counts[record.outcome ?? 'unknown'] = (counts[record.outcome ?? 'unknown'] ?? 0) + 1;
     return counts;
   }, {});
   const outcomeText = Object.entries(outcomes).map(([name, count]) => `${name}: ${count}`).join(', ');
-  const header = `Sidekick delegated cost estimates (delegated work only)\nCalls: ${unique.length} · comparable: ${comparable.length} · unavailable: ${unavailable}\nOutcomes: ${outcomeText}`;
-  if (comparable.length === 0) return `${header}\nNo comparable calls; no aggregate baseline is applied to unavailable calls.`;
-  const sidekickCost = comparable.reduce((sum, item) => sum + item.comparison.sidekickCost, 0);
-  const leadCost = comparable.reduce((sum, item) => sum + item.comparison.leadCost, 0);
-  const difference = leadCost - sidekickCost;
-  const percentage = leadCost === 0 ? undefined : difference / leadCost * 100;
-  const comparison = difference > 0
-    ? `estimated ${money(difference)} lower (${percentage.toFixed(1)}% lower)`
-    : difference < 0
-      ? `estimated ${money(-difference)} higher (${Math.abs(percentage).toFixed(1)}% higher)`
-      : 'estimated difference $0.00 (0.0%)';
-  return `${header}\nComparable totals: ${money(sidekickCost)} sidekick · ${money(leadCost)} lead-equivalent · ${comparison}\nUnavailable calls are excluded from these comparable totals. Excludes lead planning/review; tokenization, context and retries differ. Subscription billing is not represented by API-rate estimates.`;
+  const header = `Sidekick delegated cost estimates · ${scope} (delegated work only)\nCalls: ${unique.length} · comparable: ${comparable.length} · unavailable: ${unavailable}\nOutcomes: ${outcomeText}${durationSummary(summary)}`;
+  if (comparable.length === 0) return `${header}\nNo comparable calls; no aggregate baseline is applied to unavailable calls.${warning}`;
+  if (!summary.aggregateAvailable) return `${header}\nAggregate totals unavailable: numeric range exceeded; individual records remain valid.${warning}`;
+  const comparison = totalComparison(summary.difference, summary.percentage);
+  return `${header}\nComparable totals: ${money(summary.sidekickCost)} estimated Sidekick cost · ${money(summary.leadCost)} lead-equivalent for the same tokens · ${comparison.text}\nUnavailable calls are excluded from these comparable totals. Excludes lead planning/review; tokenization, context and retries differ. Subscription billing is not represented by API-rate estimates.${warning}`;
 }

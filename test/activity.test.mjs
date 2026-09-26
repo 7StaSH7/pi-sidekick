@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyActivityEvent, BRAILLE_FRAMES, createActivityState, formatActivity, FRAME_INTERVAL_MS, resetActivity, startActivityAnimation } from '../activity.mjs';
+import { activityDuration, applyActivityEvent, BRAILLE_FRAMES, createActivityState, formatActivity, formatActivityActions, formatDuration, FRAME_INTERVAL_MS, resetActivity, startActivityAnimation } from '../activity.mjs';
 
 const start = (toolCallId, toolName, args, now) => applyActivityEvent(activity, { type: 'tool_execution_start', toolCallId, toolName, args }, now);
 const end = (toolCallId, toolName, isError, now) => applyActivityEvent(activity, { type: 'tool_execution_end', toolCallId, toolName, isError }, now);
@@ -35,6 +35,8 @@ test('keeps parallel tool ids separate and bounds recent history', () => {
     end(`id-${index}`, 'read', false, index * 100 + 10);
   }
   assert.equal(activity.actions.length, 5);
+  assert.equal(activity.history.length, 8);
+  assert.equal(formatActivityActions(activity.history).split('\n').length, 8);
   assert.equal(activity.completed, 8);
   const output = formatActivity(activity);
   assert.doesNotMatch(output, /file-1\.dart/);
@@ -52,8 +54,17 @@ test('resets per task and hides control characters, secrets and write bodies', (
   assert.match(output, /bash \[command hidden: possible secret\]/);
 
   resetActivity(activity);
-  assert.equal(formatActivity(activity), '⠋ Working\nsidekick · starting · completed: 0');
+  assert.match(formatActivity(activity), /^⠋ Working · \d+ms\nsidekick · starting · completed: 0$/);
   assert.equal(activity.actions.length, 0);
+});
+
+test('elapsed time is monotonic and appears alongside the full action count', () => {
+  activity = createActivityState('sidekick', 1000);
+  start('read-1', 'read', { path: 'file.txt' }, 100);
+  end('read-1', 'read', false, 150);
+  assert.equal(activityDuration(activity, 2250), 1250);
+  assert.equal(formatDuration(119999), '1m 59s');
+  assert.match(formatActivity(activity, 1, 2250), /^⠙ Working · 1\.3s\nsidekick · waiting for model · completed: 1/);
 });
 
 test('Working braille heartbeat cycles and stops on abort or cleanup', t => {

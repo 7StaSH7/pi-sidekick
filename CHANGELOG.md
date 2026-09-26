@@ -2,6 +2,11 @@
 
 Notable changes are recorded here. Releases use [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- Read saved stats and task transcripts without opening, migrating, or rewriting session files; report incomplete history and preserve task reports when transcripts are unavailable.
+- Show two-line estimated cost comparisons, duration totals, and branch savings in the footer while Sidekick is on or off.
+
 ## [0.2.0] - 2026-09-23
 
 - Rename active UI branding, the public tool, configuration, worker environment, session directory, and state/stat markers to Sidekick.

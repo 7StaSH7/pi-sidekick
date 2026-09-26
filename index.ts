@@ -2,16 +2,17 @@ import { chmodSync, constants, copyFileSync, existsSync, linkSync, mkdirSync, re
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { getAgentDir, getPackageDir, SessionManager, truncateHead, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, getPackageDir, keyHint, SessionManager, truncateHead, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import { Text } from '@earendil-works/pi-tui';
 import { callText, resultText } from './presentation.mjs';
+import { readSessionStats, readTaskTranscript } from './history.mjs';
 import { RpcPeer } from './rpc.mjs';
 import { loadSidekickConfig, saveSidekickConfig } from './config.mjs';
-import { formatStats, formatTaskCost, makeDelegationRecord, snapshotModel } from './cost.mjs';
+import { formatCompactSavings, formatStats, formatTaskCost, makeDelegationRecord, snapshotModel } from './cost.mjs';
 import { DEFAULT_TIMEOUT_MINUTES, STATE, STATS, TOOL, WORKER_ENV, WORKER_CONFIG_ENV, WORKER_TOOLS, LEAD_PROMPT, assertModel, requireModel, restoreState, hasSidekickSibling, isStatsEntry, inheritedExtensions, parseLaunchSidekick, sidekickPrompt, displaySidekick, validateSidekickSelection, defaultSidekickConfig, timeoutMilliseconds, validateTimeoutMinutes } from './policy.mjs';
-import { applyActivityEvent, createActivityState, formatActivity, startActivityAnimation } from './activity.mjs';
+import { activityDuration, applyActivityEvent, createActivityState, formatActivity, startActivityAnimation } from './activity.mjs';
 
 const entryPath = fileURLToPath(import.meta.url);
 
@@ -75,12 +76,48 @@ export default function sidekick(pi: ExtensionAPI) {
   let usage: any;
   let usageCostReported = false;
   let usageCall: string | undefined;
+  let taskDetails: any;
 
   function status(ctx: ExtensionContext) {
-    const text = state.enabled
+    const records = ctx.sessionManager.getBranch().filter(isStatsEntry).map(entry => entry.data);
+    const savings = formatCompactSavings(records);
+    const label = state.enabled
       ? `Sidekick · ${displaySidekick(config.sidekick)}${busy ? ' · working' : ''}`
-      : startupFailure ? 'Sidekick · startup error · /sidekick setup, on or off' : undefined;
-    ctx.ui.setStatus('sidekick', text);
+      : startupFailure ? 'Sidekick · startup error · /sidekick setup, on or off' : 'Sidekick off';
+    ctx.ui.setStatus('sidekick', `${label}${savings ? ` · ${savings}` : ''}`);
+  }
+
+  async function listStatsSessions(sessionDir: string | undefined, signal?: AbortSignal) {
+    let skipped = 0;
+    const onProgress = (loaded: number, total: number, partial?: readonly { path: string }[]) => {
+      if (loaded === total) skipped = Math.max(0, total - (partial?.length ?? 0));
+    };
+    const sessions = sessionDir
+      ? await SessionManager.listAll(sessionDir, onProgress, signal)
+      : await SessionManager.listAll(onProgress, signal);
+    return { sessions, skipped };
+  }
+
+  async function allSessionStats(ctx: ExtensionContext, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const sessionDir = ctx.sessionManager.getSessionDir();
+    const [defaultResult, currentResult] = await Promise.all([
+      listStatsSessions(undefined, signal),
+      listStatsSessions(sessionDir, signal),
+    ]);
+    signal?.throwIfAborted();
+    const history = await readSessionStats({
+      sessionPaths: [...defaultResult.sessions, ...currentResult.sessions].map(session => session.path),
+      currentFile: ctx.sessionManager.getSessionFile(),
+      currentEntries: ctx.sessionManager.getEntries(),
+      signal,
+    });
+    const defaultRoot = resolve(getAgentDir(), 'sessions');
+    const currentDirIsDefaultChild = dirname(resolve(sessionDir)) === defaultRoot;
+    return {
+      ...history,
+      unreadableFiles: history.unreadableFiles + defaultResult.skipped + (currentDirIsDefaultChild ? 0 : currentResult.skipped),
+    };
   }
   function blockStartup(ctx: ExtensionContext, error: unknown) {
     startupFailure = String(error);
@@ -202,6 +239,27 @@ export default function sidekick(pi: ExtensionAPI) {
     // Do not let child extensions overwrite the lead's editor, title or footer.
   }
 
+  function transcriptFor(reference: any, renderState: any) {
+    const key = JSON.stringify([reference?.sessionFile, reference?.fromEntryId, reference?.toEntryId]);
+    if (renderState?.transcriptKey === key) return renderState.transcriptResult;
+    let result;
+    try {
+      const snapshot = reference && typeof reference === 'object'
+        ? Object.freeze({ sessionFile: reference.sessionFile, fromEntryId: reference.fromEntryId, toEntryId: reference.toEntryId })
+        : reference;
+      const agentDir = realpathSync(getAgentDir());
+      const text = readTaskTranscript(snapshot, [join(agentDir, 'sidekick', 'sessions'), join(agentDir, 'fusion', 'sessions')]);
+      result = Object.freeze({ reference: snapshot, text: text || 'No saved Sidekick entries for this task.' });
+    } catch (error) {
+      result = Object.freeze({ error: String(error instanceof Error ? error.message : error) });
+    }
+    if (renderState) {
+      renderState.transcriptKey = key;
+      renderState.transcriptResult = result;
+    }
+    return result;
+  }
+
   function reportActivity() {
     if (!activity) return;
     const text = formatActivity(activity, animationFrame);
@@ -266,7 +324,16 @@ export default function sidekick(pi: ExtensionAPI) {
       return new Text(callText(args, context.expanded, theme), 0, 0);
     },
     renderResult(result, options, theme, context) {
-      return new Text(resultText(result, { ...options, isError: context.isError }, theme), 0, 0);
+      const transcript = options.expanded && !options.isPartial
+        ? transcriptFor(result.details?.transcript, context.state)
+        : undefined;
+      return new Text(resultText(result, {
+        ...options,
+        isError: context.isError,
+        transcriptText: transcript?.text,
+        transcriptError: transcript?.error,
+        expandHint: keyHint('app.tools.expand', 'to expand'),
+      }, theme), 0, 0);
     },
     parameters: Type.Object({
       brief: Type.String({ minLength: 1, maxLength: 32000, description: 'Task and relevant facts/paths; no full conversation dump.' }),
@@ -285,6 +352,12 @@ export default function sidekick(pi: ExtensionAPI) {
       if (busy) throw new Error('Only one Sidekick task may run at a time.');
       signal?.throwIfAborted();
       busy = true;
+      taskDetails = undefined;
+      const taskStartedAt = performance.now();
+      let transcriptStarted = false;
+      let transcriptStartId: string | null = null;
+      let durationMs: number | undefined;
+      let costRecord: any;
       activeContext = ctx;
       lastAssistant = undefined;
       taskError = undefined;
@@ -294,6 +367,28 @@ export default function sidekick(pi: ExtensionAPI) {
       usageCostReported = true;
       usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
       let outcome: 'success' | 'error' | 'cancelled' = 'error';
+      const completedDetails = () => {
+        let transcript;
+        if (transcriptStarted && childFile) {
+          try {
+            const file = checkedFile(childFile);
+            const endEntryId = SessionManager.open(file, root()).getLeafId();
+            if (endEntryId) transcript = { sessionFile: file, fromEntryId: transcriptStartId, toEntryId: endEntryId };
+          } catch {
+            // Keep task metadata even if its optional transcript reference cannot be read.
+          }
+        }
+        return {
+          sessionFile: childFile,
+          provider: selected.provider,
+          model: selected.id,
+          thinking: selected.thinking,
+          durationMs,
+          actionCount: activity?.history.length ?? 0,
+          costRecord,
+          ...(transcript ? { transcript } : {}),
+        };
+      };
       const controller = new AbortController();
       const deadline = setTimeout(() => controller.abort(new Error(`Sidekick task exceeded ${timeoutMinutes} minutes.`)), taskTimeoutMs);
       const cancel = () => controller.abort(signal?.reason);
@@ -310,7 +405,14 @@ export default function sidekick(pi: ExtensionAPI) {
       };
       controller.signal.addEventListener('abort', abort, { once: true });
       onProgress = text => {
-        onUpdate?.({ content: [{ type: 'text', text }], details: {} });
+        onUpdate?.({
+          content: [{ type: 'text', text }],
+          details: {
+            durationMs: activity ? activityDuration(activity) : undefined,
+            actionCount: activity?.completed ?? 0,
+            actions: activity?.history ?? [],
+          },
+        });
       };
       const animate = ctx.hasUI && !!onUpdate;
       animationFrame = animate ? 0 : undefined;
@@ -327,6 +429,8 @@ export default function sidekick(pi: ExtensionAPI) {
         const child = await current.request('get_state');
         controller.signal.throwIfAborted();
         assertModel(child.model, selected, child.thinkingLevel);
+        if (existsSync(childFile!)) transcriptStartId = SessionManager.open(checkedFile(childFile!), root()).getLeafId();
+        transcriptStarted = true;
         const settled = current.waitForEvent(e => e.type === 'agent_settled', { signal: controller.signal, timeoutMs: taskTimeoutMs });
         // Attach a rejection handler before sending: cancellation can win the acceptance race.
         void settled.catch(() => {});
@@ -341,10 +445,12 @@ export default function sidekick(pi: ExtensionAPI) {
         if (!text.trim()) throw new Error('Sidekick returned no report. Inspect its saved session before retrying.');
         const output = truncateHead(text);
         outcome = 'success';
-        const costRecord = makeDelegationRecord(_id, leadSnapshot, sidekickSnapshot, { ...usage, costReported: usageCostReported }, outcome);
+        durationMs = Math.round(Math.max(0, performance.now() - taskStartedAt));
+        costRecord = makeDelegationRecord(_id, leadSnapshot, sidekickSnapshot, { ...usage, costReported: usageCostReported }, outcome, durationMs);
+        taskDetails = completedDetails();
         return {
           content: [{ type: 'text', text: `${output.content}\n\n${formatTaskCost(costRecord)}\n\n${output.truncated ? '[Report truncated.] ' : ''}Sidekick session: ${childFile}\nLead: verify the actual diff and checks before declaring completion.` }],
-          details: { sessionFile: childFile, provider: selected.provider, model: selected.id, thinking: selected.thinking, costRecord },
+          details: taskDetails,
           usage,
         };
       } catch (error) {
@@ -353,6 +459,9 @@ export default function sidekick(pi: ExtensionAPI) {
         abort();
         await abortWork?.catch(() => {});
         await stop();
+        durationMs = Math.round(Math.max(0, performance.now() - taskStartedAt));
+        costRecord = makeDelegationRecord(_id, leadSnapshot, sidekickSnapshot, { ...usage, costReported: usageCostReported }, outcome, durationMs);
+        taskDetails = completedDetails();
         throw new Error(`${controller.signal.aborted ? String(controller.signal.reason ?? 'Cancelled') : String(error)}${childFile ? ` Saved session: ${childFile}.` : ''} Sidekick may have changed files; cancellation does not roll them back.`);
       } finally {
         stopAnimation?.();
@@ -362,8 +471,11 @@ export default function sidekick(pi: ExtensionAPI) {
         signal?.removeEventListener('abort', cancel);
         controller.signal.removeEventListener('abort', abort);
         controller.abort(); // Close permission dialogs even if the worker crashed.
+        durationMs ??= Math.round(Math.max(0, performance.now() - taskStartedAt));
+        costRecord ??= makeDelegationRecord(_id, leadSnapshot, sidekickSnapshot, { ...usage, costReported: usageCostReported }, outcome, durationMs);
+        taskDetails ??= completedDetails();
         try {
-          if (!disposed) pi.appendEntry(STATS, makeDelegationRecord(_id, leadSnapshot, sidekickSnapshot, { ...usage, costReported: usageCostReported }, outcome));
+          if (!disposed) pi.appendEntry(STATS, costRecord);
         } finally {
           try { checkpoint(ctx); }
           finally {
@@ -453,20 +565,25 @@ export default function sidekick(pi: ExtensionAPI) {
     }
   }
   pi.registerCommand('sidekick', {
-    description: 'Sidekick: on | off | setup | stats | status | reset',
-    getArgumentCompletions: prefix => ['on', 'off', 'setup', 'stats', 'status', 'reset'].filter(x => x.startsWith(prefix)).map(x => ({ value: x, label: x })),
+    description: 'Sidekick: on | off | setup | stats [all] | status | reset',
+    getArgumentCompletions: prefix => ['on', 'off', 'setup', 'stats', 'stats all', 'status', 'reset'].filter(x => x.startsWith(prefix)).map(x => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       const command = args.trim() || 'status';
-      if (busy && command !== 'status' && command !== 'stats') {
+      if (busy && !['status', 'stats', 'stats all'].includes(command)) {
         ctx.ui.notify(`${displaySidekick(config.sidekick)} is working. Press Esc, then retry the command.`, 'warning');
         return;
       }
       try {
         if (command === 'on') await enable(ctx);
         else if (command === 'setup') { await setup(ctx); return; }
-        else if (command === 'stats') {
-          const records = ctx.sessionManager.getBranch().filter(isStatsEntry).map(entry => entry.data);
-          ctx.ui.notify(formatStats(records), 'info');
+        else if (command === 'stats' || command === 'stats all') {
+          if (command === 'stats all') {
+            const { records, malformedLines, unreadableFiles } = await allSessionStats(ctx, ctx.signal);
+            ctx.ui.notify(formatStats(records, { scope: 'all sessions', malformedLines, unreadableFiles }), 'info');
+          } else {
+            const records = ctx.sessionManager.getBranch().filter(isStatsEntry).map(entry => entry.data);
+            ctx.ui.notify(formatStats(records), 'info');
+          }
           return;
         }
         else if (command === 'off') {
@@ -480,7 +597,7 @@ export default function sidekick(pi: ExtensionAPI) {
           await stop();
           state = { enabled: state.enabled };
           save(ctx);
-        } else if (command !== 'status') throw new Error('Use /sidekick on | off | setup | stats | status | reset');
+        } else if (command !== 'status') throw new Error('Use /sidekick on | off | setup | stats [all] | status | reset');
         ctx.ui.notify(`Sidekick ${state.enabled ? 'ON' : 'OFF'} · ${displaySidekick(config.sidekick)} · timeout ${config.timeoutMinutes} minutes${busy ? ' · working' : ''}\n${state.checkpoint?.file ?? 'Session will appear on the first task.'}`, 'info');
       } catch (error) {
         if (command === 'on') blockStartup(ctx, error);
@@ -502,9 +619,14 @@ export default function sidekick(pi: ExtensionAPI) {
   pi.on('tool_result', event => {
     if (event.toolName !== TOOL || event.toolCallId !== usageCall) return;
     const completedUsage = usage;
+    const completedResultDetails = taskDetails;
     usageCall = undefined;
     usage = undefined;
-    return { usage: completedUsage };
+    taskDetails = undefined;
+    const details = completedResultDetails && typeof completedResultDetails === 'object'
+      ? { ...(event.details && typeof event.details === 'object' ? event.details : {}), ...completedResultDetails }
+      : undefined;
+    return { usage: completedUsage, ...(details ? { details } : {}) };
   });
   pi.on('tool_call', (event, ctx) => {
     if (state.enabled && hasSidekickSibling(ctx.sessionManager.getBranch(), event.toolName)) {

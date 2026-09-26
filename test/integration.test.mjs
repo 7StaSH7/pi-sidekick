@@ -7,17 +7,32 @@ import { fileURLToPath } from 'node:url';
 import { RpcPeer } from '../rpc.mjs';
 import { STATE, STATS, TOOL } from '../policy.mjs';
 import { compareCosts } from '../cost.mjs';
+import { formatTaskTranscript } from '../presentation.mjs';
 
 const project = fileURLToPath(new URL('..', import.meta.url));
 const LEAD = { provider: 'anthropic', id: 'fixture-lead', thinking: 'medium' };
 const SIDEKICK = { provider: 'openai-codex', id: 'gpt-5.6-luna', thinking: 'max' };
 const ALT_SIDEKICK = { provider: 'openai', id: 'fixture-sidekick', thinking: 'high' };
 
+function savedTaskTranscript(reference) {
+  const entries = readFileSync(reference.sessionFile, 'utf8').trim().split('\n').map(JSON.parse).filter(entry => entry.type !== 'session');
+  const byId = new Map(entries.map(entry => [entry.id, entry]));
+  const branch = [];
+  let entry = byId.get(reference.toEntryId);
+  while (entry) {
+    branch.push(entry);
+    if (entry.id === reference.fromEntryId || (reference.fromEntryId === null && entry.parentId === null)) break;
+    entry = byId.get(entry.parentId);
+  }
+  return formatTaskTranscript(branch.reverse(), reference.fromEntryId, reference.toEntryId);
+}
+
 test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resume and fork', { timeout: 180000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-sidekick-integration-'));
   const agentDir = join(dir, 'agent');
+  const sessionDir = join(agentDir, 'custom-current-sessions');
   const cwd = join(dir, 'work');
-  mkdirSync(agentDir); mkdirSync(cwd);
+  mkdirSync(agentDir); mkdirSync(sessionDir); mkdirSync(cwd);
   writeFileSync(join(cwd, 'input.txt'), 'offline fixture content');
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({
     extensions: [join(project, 'test/fixture.ts')],
@@ -27,7 +42,7 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
   const legacyConfigFile = join(agentDir, 'fusion.json');
   const legacyConfig = JSON.stringify({ sidekick: SIDEKICK, animation: false, timeoutMinutes: 90 });
   writeFileSync(legacyConfigFile, legacyConfig);
-  const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_SIDEKICK_TEST: '1', PI_SIDEKICK_TEST_LOG: join(dir, 'events.jsonl') };
+  const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_SIDEKICK_TEST: '1', PI_SIDEKICK_TEST_LOG: join(dir, 'events.jsonl'), PI_SIDEKICK_TEST_STATUS_LOG: join(dir, 'statuses.jsonl') };
   delete env.PI_SIDEKICK_WORKER;
   let peer;
   let notifications = [];
@@ -36,9 +51,13 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
   const setupMenus = [];
   const progress = [];
   const fixtureEvents = () => readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse);
+  const statuses = () => existsSync(env.PI_SIDEKICK_TEST_STATUS_LOG)
+    ? readFileSync(env.PI_SIDEKICK_TEST_STATUS_LOG, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line).text)
+    : [];
   const open = async sessionFile => {
     peer = new RpcPeer('pi', ['--mode', 'rpc', '--offline', '--approve', '--no-extensions',
-      '-e', join(project, 'index.ts'), '-e', join(project, 'test/fixture.ts'),
+      '-e', join(project, 'test/status-hook-probe.ts'), '-e', join(project, 'test/fixture.ts'),
+      '--session-dir', sessionDir,
       '--provider', LEAD.provider, '--model', LEAD.id, '--thinking', 'medium',
       ...(sessionFile ? ['--session', sessionFile] : [])], {
       cwd, env,
@@ -104,13 +123,30 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     const first = await prompt('READ first');
     const runningUpdate = await activityRunning;
     const completedUpdate = await activityCompleted;
+    assert.match(JSON.stringify(runningUpdate.partialResult), /Working · \d+ms/);
     assert.match(JSON.stringify(runningUpdate.partialResult), /▶ read.*input\.txt/);
+    assert.equal(runningUpdate.partialResult.details.actions.length, 1);
     assert.match(JSON.stringify(completedUpdate.partialResult), /✓ read.*input\.txt/);
+    assert.equal(completedUpdate.partialResult.details.actionCount, 1);
+    assert(Number.isFinite(completedUpdate.partialResult.details.durationMs));
     assert.match(first, /offline fixture content/, first);
+    const firstTaskResult = (await peer.request('get_entries')).entries.findLast(e => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolName === TOOL);
+    const firstTranscriptRef = firstTaskResult.message.details.transcript;
+    assert(firstTranscriptRef?.toEntryId, JSON.stringify(firstTaskResult.message.details));
+    assert.equal(firstTranscriptRef.fromEntryId, null);
+    const firstTranscript = savedTaskTranscript(firstTranscriptRef);
+    assert.match(firstTranscript, /Tool call · read/);
+    assert.match(firstTranscript, /Tool result · read/);
+    assert.match(firstTranscript, /offline fixture content/);
     const firstCheckpoint = await checkpoint();
     assert(firstCheckpoint?.file, JSON.stringify(notifications));
     const second = await prompt('READ second');
     assert.match(second, /history=2/, second);
+    const secondTaskResult = (await peer.request('get_entries')).entries.findLast(e => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolName === TOOL);
+    const secondTranscriptRef = secondTaskResult.message.details.transcript;
+    assert.equal(secondTranscriptRef.fromEntryId, firstTranscriptRef.toEntryId);
+    assert.match(savedTaskTranscript(secondTranscriptRef), /READ second/);
+    assert.doesNotMatch(savedTaskTranscript(firstTranscriptRef), /READ second/);
     assert.equal((await checkpoint()).file, firstCheckpoint.file);
 
     await prompt('WRITE');
@@ -124,6 +160,10 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     const beforeFailure = await checkpoint();
     const failed = await prompt('FAIL');
     assert.match(failed, /did not finish successfully/, failed);
+    const failedToolResult = (await peer.request('get_entries')).entries.findLast(e => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolName === TOOL);
+    assert.equal(failedToolResult.message.isError, true, 'worker failure remains a native tool error');
+    assert(Number.isFinite(failedToolResult.message.details.durationMs));
+    assert.equal(failedToolResult.message.details.costRecord.outcome, 'error');
     const afterFailure = await checkpoint();
     assert(failed.includes(afterFailure.file), failed);
     assert.notEqual(afterFailure.leaf, beforeFailure.leaf, 'failed task history must be checkpointed');
@@ -150,7 +190,10 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     const forkMessages = await peer.request('get_fork_messages');
     const secondPrompt = forkMessages.messages.find(m => m.text === 'READ second');
     assert(secondPrompt);
+    const statusesBeforeFork = statuses().length;
     await peer.request('fork', { entryId: secondPrompt.entryId });
+    assert(statuses().slice(statusesBeforeFork).some(text => text?.startsWith('Sidekick · ') && text.includes('≈ saved $')),
+      'forked lead branch must refresh footer savings from that branch');
     const rewound = await prompt('READ rewound');
     assert.match(rewound, /history=2/, 'fork must not leak abandoned future briefs into Luna');
 
@@ -164,6 +207,11 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
       && e.partialResult?.content?.[0]?.text?.startsWith('⠙ Working'), { timeoutMs: 5000 });
     await peer.request('abort', {}, 10000);
     assert.equal((await peer.request('get_state')).isStreaming, false);
+    const cancelledToolResult = (await peer.request('get_entries')).entries.findLast(e => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolName === TOOL);
+    assert.equal(cancelledToolResult.message.isError, true, 'cancellation remains a native tool error');
+    assert(Number.isFinite(cancelledToolResult.message.details.durationMs));
+    assert.equal(cancelledToolResult.message.details.costRecord.outcome, 'cancelled');
+    assert.equal(cancelledToolResult.message.details.actionCount, 1);
     const afterCancel = await checkpoint();
     assert(afterCancel?.leaf);
     const recovered = await prompt('READ after cancellation');
@@ -185,6 +233,35 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     await peer.request('prompt', { message: `/fixture-legacy-stats ${JSON.stringify(legacyStatsRecord)}` });
     await peer.request('prompt', { message: '/sidekick stats' });
     assert(notifications.some(n => n.includes(`Calls: ${statsEntries.length + 1}`) && n.includes('Sidekick delegated cost estimates') && n.includes('75.0% lower')));
+    const currentLeadFile = (await peer.request('get_state')).sessionFile;
+    const defaultCopyDir = join(agentDir, 'sessions', '--stats-default-copy--');
+    mkdirSync(defaultCopyDir, { recursive: true });
+    const defaultCopy = join(defaultCopyDir, 'fork-copy.jsonl');
+    copyFileSync(currentLeadFile, defaultCopy);
+    const customProbe = join(sessionDir, 'custom-dir-only.jsonl');
+    const defaultProbe = join(defaultCopyDir, 'default-dir-only.jsonl');
+    const malformedBody = join(sessionDir, 'malformed-body.jsonl');
+    const unreadableSession = join(sessionDir, 'unreadable-session.jsonl');
+    const probeSession = (id, outcome) => {
+      const probeRecord = { ...statsEntries[0], callId: id, outcome, durationMs: 123 };
+      return `${JSON.stringify({ type: 'session', version: 3, id, cwd, timestamp: new Date().toISOString() })}\n${JSON.stringify({ type: 'custom', id: `${id}-entry`, parentId: null, timestamp: new Date().toISOString(), customType: STATS, data: probeRecord })}\n`;
+    };
+    writeFileSync(customProbe, probeSession('custom-dir-only', 'custom-dir-only'));
+    writeFileSync(defaultProbe, probeSession('default-dir-only', 'default-dir-only'));
+    writeFileSync(malformedBody, `${JSON.stringify({ type: 'session', version: 3, id: 'malformed-body', cwd, timestamp: new Date().toISOString() })}\n{broken\n`);
+    writeFileSync(unreadableSession, 'not a session header\n');
+    const inputFiles = [defaultCopy, customProbe, defaultProbe, malformedBody, unreadableSession];
+    const inputBytes = inputFiles.map(path => readFileSync(path));
+    await peer.request('prompt', { message: '/sidekick stats all' });
+    const allStats = notifications.findLast(n => n.includes('all sessions') && n.includes('Sidekick delegated cost estimates'));
+    assert(allStats, notifications.join('\n'));
+    assert.match(allStats, /Calls: [1-9][0-9]*/);
+    assert.match(allStats, /Duration: .* known · .* unknown/);
+    assert.match(allStats, /custom-dir-only: 1/, 'configured session directory is discovered');
+    assert.match(allStats, /default-dir-only: 1/, 'default session directories are discovered');
+    assert.match(allStats, /Read-only scan warnings: 1 malformed JSONL line · 1 unreadable file/);
+    assert.deepEqual(inputFiles.map(path => readFileSync(path)), inputBytes,
+      'all-session stats must not rewrite discovered session files');
 
     const events = readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse);
     const modelCalls = events.filter(e => e.model);
@@ -222,6 +299,8 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
       assert(result, 'record has matching native tool result');
       assert.equal(result.usage.cost.total, record.usage.cost.total, 'analytics must not duplicate native cost');
       assert.equal(result.usage.input, record.usage.input);
+      assert.equal(result.details.durationMs, record.durationMs);
+      assert.equal(result.details.costRecord.outcome, record.outcome);
     }
 
     await peer.request('prompt', { message: '/sidekick off' });
@@ -229,12 +308,16 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     await peer.request('prompt', { message: '/sidekick on' });
     assert(notifications.some(n => n.includes('Sidekick ON')));
     await peer.request('prompt', { message: '/sidekick off' });
+    assert(statuses().some(text => text?.startsWith('Sidekick off · ≈ saved $')),
+      'saved estimate remains visible after /sidekick off');
     const offSessionFile = (await peer.request('get_state')).sessionFile;
     await peer.close();
     await open(offSessionFile);
     const reopenedEntries = await peer.request('get_entries');
     const reopenedSidekickState = reopenedEntries.entries.findLast(e => e.type === 'custom' && e.customType === STATE);
     assert.equal(reopenedSidekickState?.data.enabled, false, 'explicit off persists across reload');
+    assert(statuses().some(text => text?.startsWith('Sidekick off · ≈ saved $')),
+      'reloaded off session restores its branch savings in the footer');
     const configFile = join(agentDir, 'sidekick.json');
     const currentConfig = readFileSync(configFile, 'utf8');
     assert.doesNotMatch(currentConfig, /animation/);
@@ -355,6 +438,7 @@ test('native pi: missing auth fails closed until explicit off', { timeout: 60000
   const env = {
     ...process.env,
     PI_CODING_AGENT_DIR: agentDir,
+    PI_SIDEKICK_TEST_STATUS_LOG: join(dir, 'statuses.jsonl'),
     PI_OFFLINE: '1',
     PI_SIDEKICK_TEST: '1',
     PI_SIDEKICK_TEST_NO_AUTH: '1',
@@ -365,7 +449,7 @@ test('native pi: missing auth fails closed until explicit off', { timeout: 60000
   const notifications = [];
   try {
     peer = new RpcPeer('pi', ['--mode', 'rpc', '--offline', '--approve', '--no-extensions',
-      '-e', join(project, 'index.ts'), '-e', join(project, 'test/fixture.ts'),
+      '-e', join(project, 'test/status-hook-probe.ts'), '-e', join(project, 'test/fixture.ts'),
       '--provider', LEAD.provider, '--model', LEAD.id, '--thinking', 'medium'], {
       cwd, env,
       onUi: request => {
@@ -376,6 +460,8 @@ test('native pi: missing auth fails closed until explicit off', { timeout: 60000
     await peer.request('get_state');
     assert(notifications.some(n => n.includes('Sidekick startup failed')), notifications.join('\\n'));
     assert(notifications.some(n => n.includes('Input is blocked')), notifications.join('\\n'));
+    assert(readFileSync(env.PI_SIDEKICK_TEST_STATUS_LOG, 'utf8').includes('Sidekick · startup error'),
+      'startup warning remains visible in footer status');
 
     await peer.request('prompt', { message: '/sidekick reset' });
     const resetEntries = await peer.request('get_entries');

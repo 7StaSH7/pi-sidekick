@@ -73,6 +73,7 @@ Already using a local checkout? Keep only one installation enabled; do not load 
 | `/sidekick off` | Stop the idle worker and disable delegation. |
 | `/sidekick status` | Show the selection, timeout, and saved session path. |
 | `/sidekick stats` | Show delegated cost estimates for the current branch. |
+| `/sidekick stats all` | Aggregate estimates across saved sessions. |
 | `/sidekick reset` | Use fresh sidekick history on the next task; does not undo edits. |
 
 During a task, status and statistics remain available. Press **Esc** to cancel before changing settings or resetting. Cancellation keeps any file changes already made.
@@ -91,13 +92,13 @@ The lead instructions discourage concurrent lead tools while delegation is runni
 ### Progress
 
 ```text
-⠋ Working
+⠋ Working · 1.2s
 openai-codex/gpt-5.6-luna · max · executing actions · completed: 1
 ▶ read src/dates.ts:40–75 · now
 ✓ grep parseDate in src · 120ms
 ```
 
-The theme-aware display keeps five recent actions, tracks parallel tool calls, and shows retry/compaction phases. Expand the call for constraints and success criteria; expand the result for the returned report. Progress does not stream file contents or model thoughts. Displayed arguments are bounded, and suspicious shell commands are hidden; this is not a guarantee that all sensitive information is redacted.
+The theme-aware display shows monotonic elapsed time, counts completed actions, keeps five recent actions collapsed, and shows retry/compaction phases. Expand a live result with the tool-output keybinding (default **Ctrl+O**) to see its full safe action timeline. Expand a completed result to load only that task's saved transcript: brief, assistant text, tool calls and arguments, results, final report, and any compaction summary. System prompts and hidden thinking are excluded; binary image payloads are marked as omitted by the text renderer. Transcript expansion reads existing JSONL files in the Sidekick or legacy Fusion session roots only; it does not open, migrate, or rewrite them, and rejects outside paths and escaped symlinks. If history is missing or corrupt, the renderer shows the reason and keeps the original report or error visible. The expanded transcript can contain private source, commands, and tool output; it is not a secret-redaction boundary. Compact progress still bounds displayed arguments and hides suspicious shell commands.
 
 ### Configuration and sessions
 
@@ -128,9 +129,16 @@ After installing 0.2.0, run `/reload` before resuming an old lead session. Histo
 
 ### Cost estimates, not savings claims
 
-`/sidekick stats` compares sidekick usage with the estimated price of **the same token quantities** at the lead model's captured rates. Reported API costs are used when complete and usable; otherwise sidekick cost is estimated from captured rates. Missing or unusable prices are shown as unavailable, not free.
+`/sidekick stats` compares sidekick usage with the estimated price of **the same token quantities** at the lead model's captured rates. Reported API costs are used when complete and usable; otherwise sidekick cost is estimated from captured rates. Missing or unusable prices are shown as unavailable, not free. Compact result cards use two lines:
 
-Estimates include recorded failed and cancelled work, but exclude lead planning and review. Subscription billing, different tokenization, retries, context size, and differing solution quality make this **neither a bill nor a benchmark**. No measured speed, quality, or cost advantage is claimed.
+```text
+Sidekick $0.02 · Lead equivalent $2.11
+≈ Saved $2.09 (99.1%) · API-rate estimate
+```
+
+Expanded cards include the full caveat. Estimates include recorded failed and cancelled work, but exclude lead planning and review. Subscription billing, different tokenization, retries, context size, and differing solution quality make this **neither a bill nor a benchmark**. No measured speed, quality, or cost advantage is claimed.
+
+The footer shows the current branch estimate while Sidekick is on or off. `/sidekick stats all` is read-only: it scans saved lead sessions discoverable in Pi's default session directory and the current configured session directory, adds in-memory current-session records, and deduplicates forked copies. It does not recurse into worker logs; deleted sessions and work without a saved stats record are excluded. Malformed JSONL lines and unreadable files are reported because totals may be incomplete.
 
 ## Safety and limitations
 
