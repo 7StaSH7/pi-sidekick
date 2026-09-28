@@ -28,16 +28,16 @@ You ↔ Lead model
 - **See the work.** Live tool activity, permission prompts, returned reports, and saved sessions stay accessible.
 - **Inspect the cost.** Delegated usage and transparent estimates—not claims of measured savings or equal quality.
 
-This is one persistent worker, not a multi-agent swarm. The lead decides when delegation helps and remains responsible for reviewing the result.
+The extension provides one persistent Sidekick worker per invoking session. Sidekick is optional inside any host-managed agent/workflow session when that session's tools and extensions permit it. Existing systems retain control of topology, scheduling, permissions, isolation, and workspace concurrency. This package does not install, create, configure, or enable other agent systems; used alone, the flow is simply lead → Sidekick.
 
 ## Quick start
 
-**Requirements:** Node.js 22.19+, pi 0.87.1 or newer, a trusted project, and an authenticated provider with a registered model. CI tests pi 0.87.1 on Linux; other versions and platforms are not part of the current test matrix.
+**Requirements:** Node.js 22.19+, pi 0.87.1 or newer, a project the host reports as trusted when Sidekick runs, and an authenticated provider with a registered model. CI tests pi 0.87.1 on Linux; other versions and platforms are not part of the current test matrix.
 
 1. Install the tagged release:
 
    ```bash
-   pi install git:github.com/7StaSH7/pi-sidekick@v0.2.0
+   pi install git:github.com/7StaSH7/pi-sidekick@v0.3.0
    ```
 
 2. In pi, reload extensions:
@@ -82,12 +82,12 @@ Setup puts each current value first, marked `(Current)`. Enter keeps it; cancell
 
 ## How it works
 
-1. The lead calls `sidekick` with a self-contained brief, constraints, and observable success criteria—not the entire lead conversation.
+1. The invoking session calls `sidekick` with a self-contained brief, constraints, and observable success criteria—not its entire conversation.
 2. The extension launches a native pi RPC child in the same working directory, with the chosen provider, model, and reasoning pinned.
 3. The child reads and edits files, runs tools, and forwards supported permission dialogs. Later briefs reuse its session.
-4. The lead receives the report, usage, and session path, then checks the actual changes and test evidence.
+4. The invoking session receives the report, usage, and session path, then checks the actual changes and test evidence.
 
-The lead instructions discourage concurrent lead tools while delegation is running. A tool-call guard blocks sibling lead tools in the same batch. Nested delegation by the worker is blocked.
+Use Sidekick only when a bounded task benefits from a separate worker; direct work remains an option. Call it alone in the invoking session and avoid overlapping edits to files assigned to it. This local coordination rule does not govern other sessions: existing agent/workflow rules own their topology and workspace concurrency.
 
 ### Progress
 
@@ -136,15 +136,15 @@ Sidekick $0.02 · Lead equivalent $2.11
 ≈ Saved $2.09 (99.1%) · API-rate estimate
 ```
 
-Expanded cards include the full caveat. Estimates include recorded failed and cancelled work, but exclude lead planning and review. Subscription billing, different tokenization, retries, context size, and differing solution quality make this **neither a bill nor a benchmark**. No measured speed, quality, or cost advantage is claimed.
+Expanded cards include the full caveat. Estimates include recorded failed and cancelled Sidekick work, but exclude lead planning/review and other agent-system overhead, including direct Agent usage. `/sidekick stats all` can include Sidekick records from discoverable child-session files and deduplicates them by call ID; in-memory or undiscoverable sessions are absent. These comparisons are not net orchestration cost, expected savings, or a guarantee. Subscription billing, different tokenization, retries, context size, and differing solution quality make this **neither a bill nor a benchmark**. No measured speed, quality, or cost advantage is claimed.
 
-The footer shows the current branch estimate while Sidekick is on or off. `/sidekick stats all` is read-only: it scans saved lead sessions discoverable in Pi's default session directory and the current configured session directory, adds in-memory current-session records, and deduplicates forked copies. It does not recurse into worker logs; deleted sessions and work without a saved stats record are excluded. Malformed JSONL lines and unreadable files are reported because totals may be incomplete.
+The footer shows the current branch estimate while Sidekick is on or off. `/sidekick stats all` is read-only: it scans saved sessions discoverable in Pi's default session directory and the current configured session directory, adds in-memory current-session records, and deduplicates forked copies. It does not recurse into worker logs; deleted sessions and work without a saved stats record are excluded. Malformed JSONL lines and unreadable files are reported because totals may be incomplete.
 
 ## Safety and limitations
 
 - **Not a sandbox.** The worker has ordinary pi process permissions. Its allowlisted tools are `read`, `grep`, `find`, `ls`, `bash`, `edit`, and `write`; shell access can still reach files and the network.
-- **Shared files, separate conversation.** The worker edits the working tree directly. Cancellation, failure, and reset do not roll changes back. Review your diff before retrying a partially completed task.
-- **Native permissions.** Project trust and explicit CLI extensions are inherited. Supported `confirm`, `select`, and `input` dialogs are forwarded; custom TUI and multiline `editor` dialogs are not supported.
+- **Shared files, separate sessions.** The worker edits the working tree directly. Cancellation, failure, and reset do not roll changes back. Session isolation is not a filesystem sandbox; separate sessions may edit the same files. The existing agent/workflow flow owns concurrent-work safety.
+- **Host trust and permissions.** Sidekick checks the project-trust status reported by the host before starting its own worker. It cannot repair trust inheritance in an upstream child-session system or enforce a read-only profile. Supported `confirm`, `select`, and `input` dialogs are forwarded; custom TUI and multiline `editor` dialogs are not supported.
 - **Bounded execution.** The configured timeout limits a task. There is no arbitrary tool-call count cap. Reports are truncated at 2,000 lines or 50 KB; saved sessions retain the underlying history.
 - **No credential forwarding magic.** One-off CLI API keys and in-memory extension state are not forwarded. Configure provider authentication through pi. No model/provider fallback is allowed.
 

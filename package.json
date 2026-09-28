@@ -1,6 +1,6 @@
 {
   "name": "pi-sidekick",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Keep your lead model. Delegate bounded work to a persistent configurable sidekick in pi.",
   "license": "MIT",
   "author": "Aleksandr Stadnik",

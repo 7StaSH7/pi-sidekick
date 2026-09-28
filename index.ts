@@ -318,7 +318,7 @@ export default function sidekick(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL,
     label: 'Sidekick',
-    description: 'Delegate a bounded task to the persistent configured sidekick model. Call alone, never alongside other tools. Supply a self-contained brief, constraints and success criteria. Returns its report (at most 2000 lines / 50KB) and session location. The lead must review actual changes. Fails rather than switching models.',
+    description: 'Delegate a bounded task to the persistent configured sidekick model. Call it alone in this session and avoid overlapping edits to the files assigned to it. Other sessions keep their existing orchestration and workspace rules. Supply a self-contained brief, constraints and success criteria. Returns its report (at most 2000 lines / 50KB) and session location. The invoking session should verify actual changes and checks. Fails rather than switching providers or models.',
     promptSnippet: 'Delegate implementation or scoped exploration to the configured sidekick',
     renderCall(args, theme, context) {
       return new Text(callText(args, context.expanded, theme), 0, 0);
@@ -507,7 +507,10 @@ export default function sidekick(pi: ExtensionAPI) {
       const ordered = [...choices].sort((a, b) => Number(b === current) - Number(a === current));
       const labels = ordered.map(value => value === current ? `${value} (Current)` : value);
       const choice = await ctx.ui.select(title, labels, { signal: ctx.signal });
-      if (choice === undefined) throw new Error('Sidekick setup cancelled; existing settings were kept.');
+      if (choice === undefined) {
+        ctx.ui.notify('Sidekick setup cancelled; existing settings were kept.', 'info');
+        return undefined;
+      }
       const index = labels.indexOf(choice);
       if (index < 0) throw new Error('Sidekick setup returned an unknown choice.');
       return ordered[index];
@@ -522,16 +525,19 @@ export default function sidekick(pi: ExtensionAPI) {
       `Sidekick setup · model\nCurrent: ${displaySidekick(config.sidekick)} · ${config.timeoutMinutes} minutes`,
       modelChoices, modelChoices[currentModelIndex],
     );
+    if (modelChoice === undefined) return;
     const modelIndex = modelChoices.indexOf(modelChoice);
     if (modelIndex < 0) throw new Error('Sidekick setup returned an unknown model choice.');
     const model = models[modelIndex];
     const levels = getSupportedThinkingLevels(model);
     const thinking = await selectCurrent(`Sidekick setup · reasoning · ${model.provider}/${model.id}`, levels, config.sidekick.thinking);
+    if (thinking === undefined) return;
     if (!levels.includes(thinking)) throw new Error('Unsupported reasoning selection.');
     const selected = validateSidekickSelection({ provider: model.provider, id: model.id, thinking });
     const timeoutValues = [...new Set([15, 30, DEFAULT_TIMEOUT_MINUTES, 120, 240, config.timeoutMinutes])].sort((a, b) => a - b);
     const timeoutChoices = timeoutValues.map(minutes => `${minutes} minutes`);
     const timeoutChoice = await selectCurrent('Sidekick setup · task timeout', timeoutChoices, `${config.timeoutMinutes} minutes`);
+    if (timeoutChoice === undefined) return;
     const timeoutIndex = timeoutChoices.indexOf(timeoutChoice);
     if (timeoutIndex < 0) throw new Error('Sidekick setup returned an unknown timeout choice.');
     const next = { sidekick: selected, timeoutMinutes: validateTimeoutMinutes(timeoutValues[timeoutIndex]) };
@@ -601,7 +607,7 @@ export default function sidekick(pi: ExtensionAPI) {
         ctx.ui.notify(`Sidekick ${state.enabled ? 'ON' : 'OFF'} · ${displaySidekick(config.sidekick)} · timeout ${config.timeoutMinutes} minutes${busy ? ' · working' : ''}\n${state.checkpoint?.file ?? 'Session will appear on the first task.'}`, 'info');
       } catch (error) {
         if (command === 'on') blockStartup(ctx, error);
-        else ctx.ui.notify(String(error), 'error');
+        else ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error');
       }
     },
   });
@@ -630,7 +636,7 @@ export default function sidekick(pi: ExtensionAPI) {
   });
   pi.on('tool_call', (event, ctx) => {
     if (state.enabled && hasSidekickSibling(ctx.sessionManager.getBranch(), event.toolName)) {
-      return { block: true, reason: 'Call sidekick alone; concurrent lead tools could race with worker edits.' };
+      return { block: true, reason: 'Call Sidekick alone; other tools in this session can race with its edits.' };
     }
   });
   pi.on('session_start', async (_event, ctx) => {

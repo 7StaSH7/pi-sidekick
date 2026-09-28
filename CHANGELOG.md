@@ -2,11 +2,16 @@
 
 Notable changes are recorded here. Releases use [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [0.3.0] - 2026-09-28
 
+- Treat setup cancellation as an informational exit, preserve existing settings, and avoid duplicate error prefixes.
+- Show elapsed task time and expandable per-task transcripts; aggregate recorded estimates across saved sessions with fork deduplication.
+- Keep Sidekick optional within host-managed agent/workflow sessions; leave their topology and trust behavior unchanged while validating trust before Sidekick starts its own worker.
 - Allow selecting authenticated models from any pi-registered provider, including custom providers, while keeping exact model/reasoning pinning and no fallback.
 - Read saved stats and task transcripts without opening, migrating, or rewriting session files; report incomplete history and preserve task reports when transcripts are unavailable.
-- Show two-line estimated cost comparisons, duration totals, and branch savings in the footer while Sidekick is on or off.
+- Show two-line estimated cost comparisons, duration totals, and branch estimates in the footer while Sidekick is on or off.
+
+[0.3.0]: https://github.com/7StaSH7/pi-sidekick/releases/tag/v0.3.0
 
 ## [0.2.0] - 2026-09-23
 

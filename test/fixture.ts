@@ -52,13 +52,16 @@ export default function fixture(pi: any) {
       const users = context.messages.filter((m: any) => m.role === 'user').length;
       content = [{ type: 'text', text: `${child ? 'LUNA' : 'LEAD'} REPORT history=${users}: ${textOf(last)}` }];
     } else if (!child) {
-      content = [call(TOOL, { brief: prompt, constraints: 'Only use this temporary test workspace.', success_criteria: 'Report the actual tool result.' })];
+      const nativeTool = prompt.includes('NATIVE_WORKFLOW') ? 'SubagentWorkflow'
+        : prompt.includes('NATIVE_AGENT') ? 'Agent' : undefined;
+      content = [nativeTool ? call(nativeTool, {}) : call(TOOL, { brief: prompt, constraints: 'Only use this temporary test workspace.', success_criteria: 'Report the actual tool result.' })];
       if (prompt.includes('SIBLING')) content.unshift(call('write', { path: 'lead-must-not-write.txt', content: 'bad' }));
       stopReason = 'toolUse';
     } else if (prompt.includes('FAIL')) {
       content = []; stopReason = 'error';
     } else {
-      content = [prompt.includes('WAIT') ? call('bash', { command: 'sleep 30' })
+      content = [prompt.includes('WAIT_SHORT') ? call('bash', { command: 'sleep 5' })
+        : prompt.includes('WAIT') ? call('bash', { command: 'sleep 30' })
         : prompt.includes('PERMISSION') ? call('write', { path: 'denied.txt', content: 'must not appear' })
         : prompt.includes('WRITE') ? call('write', { path: 'output.txt', content: 'written by Luna' })
         : call('read', { path: 'input.txt' })];

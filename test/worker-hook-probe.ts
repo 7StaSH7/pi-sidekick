@@ -36,7 +36,7 @@ export default async function (pi: any) {
     const result = await toolCall({ type: 'tool_call', toolCallId: `allowed-${i}`, toolName: 'read', input: {} }, ctx);
     if (result?.block) throw new Error(`Allowlisted tool call ${i + 1} was blocked: ${result.reason}`);
   }
-  for (const toolName of ['sidekick', 'powershell']) {
+  for (const toolName of ['sidekick', 'powershell', 'Agent', 'SubagentWorkflow']) {
     const result = await toolCall({ type: 'tool_call', toolCallId: toolName, toolName, input: {} }, ctx);
     if (!result?.block || result.terminate !== true || !result.reason.includes('non-allowlisted tools')) {
       throw new Error(`Non-allowlisted tool was not blocked and terminated: ${toolName}`);

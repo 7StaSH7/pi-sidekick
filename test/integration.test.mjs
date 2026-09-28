@@ -46,6 +46,7 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
   delete env.PI_SIDEKICK_WORKER;
   let peer;
   let notifications = [];
+  const setupNotifications = [];
   let permissions = 0;
   let setupChoice = 'cancel';
   const setupMenus = [];
@@ -67,16 +68,19 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
         }
       },
       onUi: request => {
-        if (request.method === 'notify') notifications.push(request.message);
+        if (request.method === 'notify') {
+          notifications.push(request.message);
+          setupNotifications.push({ message: request.message, type: request.notifyType });
+        }
         if (request.method === 'confirm') { permissions++; return { confirmed: false }; }
         if (request.method === 'select') {
           setupMenus.push(request);
           if (setupChoice === 'current') return { value: request.options[0] };
           if (setupChoice === 'sixty') return { value: request.title.includes('task timeout') ? request.options.find(option => option.startsWith('60 minutes')) : request.options[0] };
         }
-        if (request.method === 'select' && ['alternate', 'cancel-timeout'].includes(setupChoice)) {
+        if (request.method === 'select' && ['alternate', 'cancel-reasoning', 'cancel-timeout'].includes(setupChoice)) {
           if (request.title.includes('Sidekick setup · model')) return { value: request.options.find(option => option.startsWith('openai/')) };
-          if (request.title.includes('reasoning')) return { value: 'high' };
+          if (request.title.includes('reasoning')) return setupChoice === 'cancel-reasoning' ? { cancelled: true } : { value: 'high' };
           if (request.title.includes('task timeout')) {
             return setupChoice === 'cancel-timeout' ? { cancelled: true } : { value: request.options.find(option => option.startsWith('90 minutes')) };
           }
@@ -322,11 +326,21 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
     const currentConfig = readFileSync(configFile, 'utf8');
     assert.doesNotMatch(currentConfig, /animation/);
     assert.equal(readFileSync(legacyConfigFile, 'utf8'), legacyConfig);
-    await peer.request('prompt', { message: '/sidekick setup' });
-    assert.equal(readFileSync(configFile, 'utf8'), currentConfig, 'cancelled setup must preserve Sidekick config');
-    setupChoice = 'cancel-timeout';
-    await peer.request('prompt', { message: '/sidekick setup' });
-    assert.equal(readFileSync(configFile, 'utf8'), currentConfig, 'cancelling timeout selection must preserve config and history');
+    for (const [choice, expectedMenus] of [['cancel', 1], ['cancel-reasoning', 2], ['cancel-timeout', 3]]) {
+      setupChoice = choice;
+      setupMenus.length = 0;
+      setupNotifications.length = 0;
+      const before = (await peer.request('get_entries')).entries;
+      await peer.request('prompt', { message: '/sidekick setup' });
+      assert.deepEqual(setupNotifications, [{ message: 'Sidekick setup cancelled; existing settings were kept.', type: 'info' }]);
+      assert.equal(setupMenus.length, expectedMenus, 'cancel stops subsequent setup prompts');
+      assert.equal(readFileSync(configFile, 'utf8'), currentConfig, 'cancel preserves config');
+      assert.deepEqual((await peer.request('get_entries')).entries, before, 'cancel preserves session state');
+    }
+    setupNotifications.length = 0;
+    await peer.request('prompt', { message: '/sidekick invalid-command' });
+    assert.equal(setupNotifications.at(-1).type, 'error');
+    assert.match(setupNotifications.at(-1).message, /^Use \/sidekick /);
     setupChoice = 'alternate';
     setupMenus.length = 0;
     await peer.request('prompt', { message: '/sidekick setup' });
