@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. Releases use [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-09-29
+
+- Add searchable TUI model selection with current-model highlighting and input/cache-read/output API rates; keep native RPC dialogs and atomic setup cancellation.
+- Render worker reports as Markdown with a neutral “Report ready” heading, distinct from lead verification; preserve plain-text task transcripts and sanitize expanded briefs.
+- Require compact result, changed-path, exact verification, and open-item evidence in worker reports; keep delegation optional and consolidate lead rework feedback.
+- Add `/sidekick steer <correction>` for an active task (up to 4000 characters). Corrections apply after current tools finish, not immediately; `Esc` still cancels. Unconsumed corrections are discarded before another task can start. Notifications do not echo correction text; consumed corrections remain in the saved task transcript.
+
+[0.4.0]: https://github.com/7StaSH7/pi-sidekick/releases/tag/v0.4.0
+
 ## [0.3.0] - 2026-09-28
 
 - Treat setup cancellation as an informational exit, preserve existing settings, and avoid duplicate error prefixes.

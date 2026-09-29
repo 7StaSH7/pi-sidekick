@@ -1,5 +1,5 @@
 // Offline integration fixture. Never shipped as an extension resource.
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/compat';
 import { TOOL, WORKER_ENV } from '../policy.mjs';
@@ -28,6 +28,8 @@ export default function fixture(pi: any) {
   if (process.env.PI_SIDEKICK_TEST !== '1') throw new Error('Test fixture must not load outside isolated tests.');
   const log = (data: any) => appendFileSync(process.env.PI_SIDEKICK_TEST_LOG!, JSON.stringify(data) + '\n');
   const child = process.env[WORKER_ENV] === '1';
+  const correctionPrefix = 'User correction for this Sidekick task (';
+  let delaySettleRace = false;
   const modelsByProvider: Record<string, any[]> = {
     anthropic: [TEST_LEAD],
     'openai-codex': [TEST_SIDEKICK],
@@ -38,6 +40,7 @@ export default function fixture(pi: any) {
     const textOf = (m: any) => typeof m?.content === 'string' ? m.content : (m?.content ?? []).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n');
     const user = context.messages.findLast((m: any) => m.role === 'user');
     const prompt = textOf(user);
+    if (child && prompt.includes('FAST_SETTLE_RACE')) delaySettleRace = true;
     const last = context.messages.at(-1);
     const promptIndex = context.messages.findLastIndex((message: any) => message.role === 'user');
     const taskResults = context.messages.slice(promptIndex + 1).filter((message: any) => message.role === 'toolResult');
@@ -45,7 +48,18 @@ export default function fixture(pi: any) {
     const call = (name: string, args: any) => ({ type: 'toolCall', id: randomUUID(), name, arguments: args });
     let content: any[];
     let stopReason = 'stop';
-    if (child && prompt.includes('TOOL_STORM_65')) {
+    if (child && prompt.startsWith(correctionPrefix)) {
+      const correction = prompt.slice(prompt.indexOf(':\n') + 2);
+      if (correction.includes('CANCEL_LEAK_WRITE')) {
+        content = [call('write', { path: 'cancel-leak.txt', content: correction })];
+        stopReason = 'toolUse';
+      } else if (correction.includes('RACE_LEAK_WRITE')) {
+        content = [call('write', { path: 'race-leak.txt', content: correction })];
+        stopReason = 'toolUse';
+      } else {
+        content = [{ type: 'text', text: `LUNA REPORT · applied user correction: ${correction}` }];
+      }
+    } else if (child && prompt.includes('TOOL_STORM_65')) {
       content = taskResults.length < 65 ? [call('read', { path: 'input.txt' })] : [{ type: 'text', text: `LUNA completed ${taskResults.length} calls` }];
       stopReason = taskResults.length < 65 ? 'toolUse' : 'stop';
     } else if (last?.role === 'toolResult') {
@@ -110,5 +124,18 @@ export default function fixture(pi: any) {
       const allowed = await ctx.ui.confirm('Fixture permission gate', 'Allow denied.txt?');
       if (!allowed) return { block: true, reason: 'Denied by native test permission hook' };
     }
+  });
+  if (child) pi.on('input', event => {
+    if (event.text.startsWith(correctionPrefix) && event.text.includes('TRANSFORM_STEER')) {
+      return { action: 'transform', text: `${event.text}\nPolicy suffix added by an inherited input hook.` };
+    }
+  });
+  if (child) pi.on('agent_settled', async () => {
+    const release = process.env.PI_SIDEKICK_TEST_RACE_RELEASE_FILE;
+    if (!delaySettleRace || !release) return;
+    delaySettleRace = false;
+    log({ hook: 'settle-race' });
+    const deadline = Date.now() + 10000;
+    while (!existsSync(release) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
   });
 }

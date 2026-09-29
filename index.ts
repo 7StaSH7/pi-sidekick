@@ -2,11 +2,12 @@ import { chmodSync, constants, copyFileSync, existsSync, linkSync, mkdirSync, re
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { getAgentDir, getPackageDir, keyHint, SessionManager, truncateHead, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, getMarkdownTheme, getPackageDir, keyHint, SessionManager, truncateHead, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
-import { Text } from '@earendil-works/pi-tui';
-import { callText, resultText } from './presentation.mjs';
+import { Container, Input, Markdown, SelectList, Text, truncateToWidth } from '@earendil-works/pi-tui';
+import { createModelPicker } from './model-picker.mjs';
+import { callText, resultView } from './presentation.mjs';
 import { readSessionStats, readTaskTranscript } from './history.mjs';
 import { RpcPeer } from './rpc.mjs';
 import { loadSidekickConfig, saveSidekickConfig } from './config.mjs';
@@ -18,6 +19,19 @@ const entryPath = fileURLToPath(import.meta.url);
 
 type Checkpoint = { file: string; leaf: string | null; owner: string };
 type State = { enabled: boolean; checkpoint?: Checkpoint };
+type SteeringCorrection = { message: string; queued: boolean; consumed: boolean };
+type ActiveInvocation = {
+  peer?: RpcPeer;
+  accepting: boolean;
+  corrections: SteeringCorrection[];
+  inFlight: Set<Promise<void>>;
+  nextCorrectionId: number;
+  abortRequested: boolean;
+  cleanup?: Promise<void>;
+};
+
+const MAX_CORRECTION_LENGTH = 4000;
+const STEERING_RPC_TIMEOUT_MS = 3000;
 
 function workerExtension(pi: ExtensionAPI) {
   let expected;
@@ -63,6 +77,7 @@ export default function sidekick(pi: ExtensionAPI) {
   let peer: RpcPeer | undefined;
   let childFile: string | undefined;
   let busy = false;
+  let activeInvocation: ActiveInvocation | undefined;
   let disposed = false;
   let activeContext: ExtensionContext | undefined;
   let uiSignal: AbortSignal | undefined;
@@ -138,6 +153,41 @@ export default function sidekick(pi: ExtensionAPI) {
     const current = peer;
     peer = undefined;
     await current?.close();
+  }
+  async function closePeer(current: RpcPeer) {
+    try {
+      if (peer === current) await stop();
+      else await current.close();
+    } catch {}
+  }
+  function closeSteeringWindow(invocation: ActiveInvocation) {
+    invocation.accepting = false;
+  }
+  function finishSteering(invocation: ActiveInvocation, abortWorker = false) {
+    closeSteeringWindow(invocation);
+    if (abortWorker) invocation.abortRequested = true;
+    if (!invocation.cleanup) {
+      invocation.cleanup = (async () => {
+        await Promise.allSettled([...invocation.inFlight]);
+        const current = invocation.peer ?? peer;
+        // Input hooks can transform corrections, defeating exact-text tracking.
+        // Clear unconditionally so no queued input crosses the task boundary.
+        if (current?.alive) {
+          try { await current.request('clear_queue', {}, STEERING_RPC_TIMEOUT_MS); }
+          catch { await closePeer(current); }
+        }
+        const notApplied = invocation.corrections.filter(correction => correction.queued && !correction.consumed).length;
+        if (notApplied) {
+          const noun = notApplied === 1 ? 'correction was' : 'corrections were';
+          activeContext?.ui.notify(`${notApplied} queued Sidekick ${noun} not applied before the task ended; discarded.`, 'warning');
+        }
+        if (invocation.abortRequested && current?.alive) {
+          try { await current.request('abort', {}, STEERING_RPC_TIMEOUT_MS); }
+          catch { await closePeer(current); }
+        }
+      })();
+    }
+    return invocation.cleanup;
   }
   function root() {
     const path = join(getAgentDir(), 'sidekick', 'sessions');
@@ -268,6 +318,24 @@ export default function sidekick(pi: ExtensionAPI) {
     onProgress?.(text);
   }
   function event(event: any) {
+    const invocation = activeInvocation;
+    if (invocation && invocation.peer === peer) {
+      if (event.type === 'agent_start') {
+        invocation.accepting = true;
+      } else if (event.type === 'agent_settled') {
+        invocation.accepting = false;
+      } else if (event.type === 'queue_update' && Array.isArray(event.steering)) {
+        for (const correction of invocation.corrections) {
+          if (event.steering.includes(correction.message)) correction.queued = true;
+        }
+      } else if (event.type === 'message_end' && event.message?.role === 'user') {
+        const content = event.message.content;
+        const text = typeof content === 'string' ? content
+          : Array.isArray(content) ? content.filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n') : '';
+        const correction = invocation.corrections.find(item => item.message === text);
+        if (correction) correction.consumed = true;
+      }
+    }
     if (event.type === 'extension_error') taskError = `Sidekick extension error (${event.event ?? 'unknown event'}). Inspect its session before retrying.`;
     if (activity && applyActivityEvent(activity, event)) reportActivity();
     if (event.type === 'message_end' && event.message?.role === 'assistant') {
@@ -327,18 +395,32 @@ export default function sidekick(pi: ExtensionAPI) {
       const transcript = options.expanded && !options.isPartial
         ? transcriptFor(result.details?.transcript, context.state)
         : undefined;
-      return new Text(resultText(result, {
+      const view = resultView(result, {
         ...options,
         isError: context.isError,
         transcriptText: transcript?.text,
         transcriptError: transcript?.error,
         expandHint: keyHint('app.tools.expand', 'to expand'),
-      }, theme), 0, 0);
+      }, theme);
+      if (view.text !== undefined) return new Text(view.text, 0, 0);
+      const container = new Container();
+      container.addChild(new Text(view.heading, 0, 0));
+      container.addChild(new Text(view.verification, 0, 0));
+      if (view.transcriptWarning) container.addChild(new Text(view.transcriptWarning, 0, 0));
+      container.addChild(new Markdown(view.report, 0, 0, getMarkdownTheme()));
+      if (view.transcript) {
+        container.addChild(new Text(view.transcriptHeading, 0, 0));
+        container.addChild(new Text(view.transcript, 0, 0));
+      }
+      if (view.more) container.addChild(new Text(view.more, 0, 0));
+      if (view.cost) container.addChild(new Text(view.cost, 0, 0));
+      if (view.session) container.addChild(new Text(view.session, 0, 0));
+      return container;
     },
     parameters: Type.Object({
-      brief: Type.String({ minLength: 1, maxLength: 32000, description: 'Task and relevant facts/paths; no full conversation dump.' }),
-      constraints: Type.String({ minLength: 1, maxLength: 8000, description: 'Scope, restrictions, relevant user instructions.' }),
-      success_criteria: Type.String({ minLength: 1, maxLength: 8000, description: 'Observable acceptance checks, tests and expected result.' }),
+      brief: Type.String({ minLength: 1, maxLength: 32000, description: 'Objective, relevant findings/paths, and already-decided interfaces; no full conversation dump.' }),
+      constraints: Type.String({ minLength: 1, maxLength: 8000, description: 'Scope, restrictions, user instructions, and workspace boundaries.' }),
+      success_criteria: Type.String({ minLength: 1, maxLength: 8000, description: 'Observable acceptance checks and expected results where known.' }),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
       if (!state.enabled) throw new Error('Sidekick is off. Enable it with /sidekick on.');
@@ -352,6 +434,10 @@ export default function sidekick(pi: ExtensionAPI) {
       if (busy) throw new Error('Only one Sidekick task may run at a time.');
       signal?.throwIfAborted();
       busy = true;
+      const invocation: ActiveInvocation = {
+        accepting: false, corrections: [], inFlight: new Set(), nextCorrectionId: 0, abortRequested: false,
+      };
+      activeInvocation = invocation;
       taskDetails = undefined;
       const taskStartedAt = performance.now();
       let transcriptStarted = false;
@@ -394,12 +480,12 @@ export default function sidekick(pi: ExtensionAPI) {
       const cancel = () => controller.abort(signal?.reason);
       signal?.addEventListener('abort', cancel, { once: true });
       uiSignal = controller.signal;
-      // Abort native pi first so its tools can clean up; close() is the bounded fallback.
-      let abortWork: Promise<unknown> | undefined;
+      // Drain and clear queues before native abort; close() remains the bounded fallback.
+      let abortWork: Promise<void> | undefined;
       const abort = () => {
-        const current = peer;
-        if (current && !abortWork) {
-          abortWork = current.request('abort', {}, 3000).catch(() => current.close());
+        closeSteeringWindow(invocation);
+        if (!abortWork) {
+          abortWork = finishSteering(invocation, true);
           void abortWork.catch(() => {});
         }
       };
@@ -424,6 +510,7 @@ export default function sidekick(pi: ExtensionAPI) {
           reportActivity();
         }, controller.signal) : undefined;
         const current = await start(ctx);
+        invocation.peer = current;
         controller.signal.throwIfAborted();
         if (taskError) throw new Error(taskError);
         const child = await current.request('get_state');
@@ -432,10 +519,12 @@ export default function sidekick(pi: ExtensionAPI) {
         if (existsSync(childFile!)) transcriptStartId = SessionManager.open(checkedFile(childFile!), root()).getLeafId();
         transcriptStarted = true;
         const settled = current.waitForEvent(e => e.type === 'agent_settled', { signal: controller.signal, timeoutMs: taskTimeoutMs });
+        void settled.then(() => closeSteeringWindow(invocation), () => closeSteeringWindow(invocation));
         // Attach a rejection handler before sending: cancellation can win the acceptance race.
         void settled.catch(() => {});
         await current.request('prompt', { message: `Sidekick brief\n\n${params.brief}\n\nConstraints\n${params.constraints}\n\nSuccess criteria\n${params.success_criteria}` });
         await settled;
+        await finishSteering(invocation);
         controller.signal.throwIfAborted();
         if (taskError) throw new Error(taskError);
         if (!lastAssistant || lastAssistant.stopReason !== 'stop') {
@@ -468,6 +557,9 @@ export default function sidekick(pi: ExtensionAPI) {
         stopAnimation = undefined;
         animationFrame = undefined;
         clearTimeout(deadline);
+        await finishSteering(invocation).catch(async () => {
+          if (invocation.peer) await closePeer(invocation.peer);
+        });
         signal?.removeEventListener('abort', cancel);
         controller.signal.removeEventListener('abort', abort);
         controller.abort(); // Close permission dialogs even if the worker crashed.
@@ -479,6 +571,7 @@ export default function sidekick(pi: ExtensionAPI) {
         } finally {
           try { checkpoint(ctx); }
           finally {
+            if (activeInvocation === invocation) activeInvocation = undefined;
             busy = false;
             onProgress = undefined;
             activity = undefined;
@@ -521,14 +614,35 @@ export default function sidekick(pi: ExtensionAPI) {
     if (models.length === 0) throw new Error('No authenticated provider models are available. Configure a provider with /login first.');
     const modelChoices = models.map(model => `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` · ${model.name}` : ''}`);
     const currentModelIndex = models.findIndex(model => model.provider === config.sidekick.provider && model.id === config.sidekick.id);
-    const modelChoice = await selectCurrent(
-      `Sidekick setup · model\nCurrent: ${displaySidekick(config.sidekick)} · ${config.timeoutMinutes} minutes`,
-      modelChoices, modelChoices[currentModelIndex],
-    );
-    if (modelChoice === undefined) return;
-    const modelIndex = modelChoices.indexOf(modelChoice);
-    if (modelIndex < 0) throw new Error('Sidekick setup returned an unknown model choice.');
-    const model = models[modelIndex];
+    let modelIndex: number;
+    if (ctx.mode === 'tui') {
+      if (ctx.signal?.aborted) {
+        ctx.ui.notify('Sidekick setup cancelled; existing settings were kept.', 'info');
+        return;
+      }
+      const selectedIndex = await ctx.ui.custom<number | null>(createModelPicker(
+        models, currentModelIndex, ctx.signal, { Input, SelectList, Text, truncateToWidth },
+      ));
+      if (selectedIndex === null || selectedIndex === undefined) {
+        ctx.ui.notify('Sidekick setup cancelled; existing settings were kept.', 'info');
+        return;
+      }
+      modelIndex = selectedIndex;
+    } else {
+      const modelChoice = await selectCurrent(
+        `Sidekick setup · model\nCurrent: ${displaySidekick(config.sidekick)} · ${config.timeoutMinutes} minutes`,
+        modelChoices, modelChoices[currentModelIndex],
+      );
+      if (modelChoice === undefined) return;
+      modelIndex = modelChoices.indexOf(modelChoice);
+      if (modelIndex < 0) throw new Error('Sidekick setup returned an unknown model choice.');
+    }
+    const pickedModel = models[modelIndex];
+    if (!pickedModel) throw new Error('Sidekick setup returned an unknown model choice.');
+    const model = ctx.modelRegistry.find(pickedModel.provider, pickedModel.id);
+    if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
+      throw new Error('Sidekick setup model is no longer available or authenticated.');
+    }
     const levels = getSupportedThinkingLevels(model);
     const thinking = await selectCurrent(`Sidekick setup · reasoning · ${model.provider}/${model.id}`, levels, config.sidekick.thinking);
     if (thinking === undefined) return;
@@ -541,7 +655,12 @@ export default function sidekick(pi: ExtensionAPI) {
     const timeoutIndex = timeoutChoices.indexOf(timeoutChoice);
     if (timeoutIndex < 0) throw new Error('Sidekick setup returned an unknown timeout choice.');
     const next = { sidekick: selected, timeoutMinutes: validateTimeoutMinutes(timeoutValues[timeoutIndex]) };
+    requireModel(ctx.modelRegistry, selected, getSupportedThinkingLevels);
     await stop();
+    if (ctx.signal?.aborted) {
+      ctx.ui.notify('Sidekick setup cancelled; existing settings were kept.', 'info');
+      return;
+    }
     config = saveSidekickConfig(getAgentDir(), next);
     startupFailure = undefined;
     state = { ...state, enabled: true };
@@ -571,15 +690,58 @@ export default function sidekick(pi: ExtensionAPI) {
     }
   }
   pi.registerCommand('sidekick', {
-    description: 'Sidekick: on | off | setup | stats [all] | status | reset',
-    getArgumentCompletions: prefix => ['on', 'off', 'setup', 'stats', 'stats all', 'status', 'reset'].filter(x => x.startsWith(prefix)).map(x => ({ value: x, label: x })),
+    description: 'Sidekick: on | off | setup | steer <correction> | stats [all] | status | reset',
+    getArgumentCompletions: prefix => ['on', 'off', 'setup', 'steer', 'stats', 'stats all', 'status', 'reset'].filter(x => x.startsWith(prefix)).map(x => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       const command = args.trim() || 'status';
-      if (busy && !['status', 'stats', 'stats all'].includes(command)) {
+      const [verb] = command.split(/\s+/, 1);
+      if (busy && !['status', 'stats', 'stats all'].includes(command) && verb !== 'steer') {
         ctx.ui.notify(`${displaySidekick(config.sidekick)} is working. Press Esc, then retry the command.`, 'warning');
         return;
       }
       try {
+        if (verb === 'steer') {
+          const correction = command.slice('steer'.length).trim();
+          if (!correction) throw new Error('Use /sidekick steer <correction> with non-empty text.');
+          if (correction.length > MAX_CORRECTION_LENGTH) throw new Error(`Correction exceeds ${MAX_CORRECTION_LENGTH} characters.`);
+          const invocation = activeInvocation;
+          const target = invocation?.peer;
+          if (!busy || !invocation?.accepting || !target?.alive || uiSignal?.aborted) {
+            ctx.ui.notify('No active Sidekick task is ready to receive a correction.', 'warning');
+            return;
+          }
+          const message = `User correction for this Sidekick task (${++invocation.nextCorrectionId}):\n${correction}`;
+          const request = { message, queued: false, consumed: false };
+          invocation.corrections.push(request);
+          const pending = (async () => {
+            let accepted = false;
+            try {
+              await target.request('steer', { message }, STEERING_RPC_TIMEOUT_MS);
+              accepted = true;
+              const childState = await target.request('get_state', {}, STEERING_RPC_TIMEOUT_MS);
+              if (!request.queued) {
+                ctx.ui.notify('Sidekick correction accepted; delivery unverified (an input hook may have changed or handled it). Any unconsumed input is discarded when this task ends.', 'warning');
+              } else if (invocation.accepting && childState.isStreaming) {
+                ctx.ui.notify('Sidekick correction queued; it applies after current tools finish.', 'info');
+              } else if (request.consumed) {
+                ctx.ui.notify('Sidekick correction reached the worker before it finished.', 'info');
+              }
+            } catch (error) {
+              const uncertain = accepted || (error instanceof Error && error.message === 'RPC request timed out: steer');
+              if (uncertain) {
+                closeSteeringWindow(invocation);
+                await closePeer(target);
+              }
+              ctx.ui.notify(uncertain
+                ? 'Sidekick correction status was uncertain; its worker was stopped to prevent task leakage.'
+                : 'Sidekick correction was not accepted.', 'warning');
+            }
+          })();
+          invocation.inFlight.add(pending);
+          try { await pending; }
+          finally { invocation.inFlight.delete(pending); }
+          return;
+        }
         if (command === 'on') await enable(ctx);
         else if (command === 'setup') { await setup(ctx); return; }
         else if (command === 'stats' || command === 'stats all') {
@@ -603,7 +765,7 @@ export default function sidekick(pi: ExtensionAPI) {
           await stop();
           state = { enabled: state.enabled };
           save(ctx);
-        } else if (command !== 'status') throw new Error('Use /sidekick on | off | setup | stats [all] | status | reset');
+        } else if (command !== 'status') throw new Error('Use /sidekick on | off | setup | steer <correction> | stats [all] | status | reset');
         ctx.ui.notify(`Sidekick ${state.enabled ? 'ON' : 'OFF'} · ${displaySidekick(config.sidekick)} · timeout ${config.timeoutMinutes} minutes${busy ? ' · working' : ''}\n${state.checkpoint?.file ?? 'Session will appear on the first task.'}`, 'info');
       } catch (error) {
         if (command === 'on') blockStartup(ctx, error);

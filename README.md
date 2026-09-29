@@ -37,7 +37,7 @@ The extension provides one persistent Sidekick worker per invoking session. Side
 1. Install the tagged release:
 
    ```bash
-   pi install git:github.com/7StaSH7/pi-sidekick@v0.3.0
+   pi install git:github.com/7StaSH7/pi-sidekick@v0.4.0
    ```
 
 2. In pi, reload extensions:
@@ -72,13 +72,16 @@ Already using a local checkout? Keep only one installation enabled; do not load 
 | `/sidekick on` | Validate the selection and enable delegation. |
 | `/sidekick off` | Stop the idle worker and disable delegation. |
 | `/sidekick status` | Show the selection, timeout, and saved session path. |
+| `/sidekick steer <correction>` | Queue a user correction for the active task, after its current tools finish. |
 | `/sidekick stats` | Show delegated cost estimates for the current branch. |
 | `/sidekick stats all` | Aggregate estimates across saved sessions. |
 | `/sidekick reset` | Use fresh sidekick history on the next task; does not undo edits. |
 
-During a task, status and statistics remain available. Press **Esc** to cancel before changing settings or resetting. Cancellation keeps any file changes already made.
+During a task, status, statistics, and steering remain available. A steering correction accepts up to 4000 characters and does not interrupt an already-running tool. Unconsumed corrections are discarded when the task ends; they do not carry into the next task. Notifications omit correction text, but consumed corrections are saved in the task transcript. Press **Esc** to cancel before changing settings or resetting. Cancellation keeps any file changes already made.
 
-Setup puts each current value first, marked `(Current)`. Enter keeps it; cancelling leaves the existing configuration unchanged. A successful setup restarts the worker on its next task while preserving its checkpoint history.
+In the TUI, setup offers model search by provider, ID, or name, an eight-row list, and input/cache-read/output API rates in USD per million tokens. Missing prices are unavailable; listed zero API rates do not imply free subscription usage. RPC clients keep native selection dialogs.
+
+Setup preselects the current model, marked `(Current)`, and puts current reasoning and timeout values first. Enter keeps each selection; cancelling leaves the existing configuration unchanged. A successful setup restarts the worker on its next task while preserving its checkpoint history.
 
 ## How it works
 
@@ -97,6 +100,8 @@ openai-codex/gpt-5.6-luna · max · executing actions · completed: 1
 ▶ read src/dates.ts:40–75 · now
 ✓ grep parseDate in src · 120ms
 ```
+
+Completed calls show **Report ready**, not verified task completion. The worker's Markdown report states its result, changed paths, exact verification commands and outcomes, and open items. The lead still reviews the actual diff and check evidence. Expanded shell output and transcripts remain plain text.
 
 The theme-aware display shows monotonic elapsed time, counts completed actions, keeps five recent actions collapsed, and shows retry/compaction phases. Expand a live result with the tool-output keybinding (default **Ctrl+O**) to see its full safe action timeline. Expand a completed result to load only that task's saved transcript: brief, assistant text, tool calls and arguments, results, final report, and any compaction summary. System prompts and hidden thinking are excluded; binary image payloads are marked as omitted by the text renderer. Transcript expansion reads existing JSONL files in the Sidekick or legacy Fusion session roots only; it does not open, migrate, or rewrite them, and rejects outside paths and escaped symlinks. If history is missing or corrupt, the renderer shows the reason and keeps the original report or error visible. The expanded transcript can contain private source, commands, and tool output; it is not a secret-redaction boundary. Compact progress still bounds displayed arguments and hides suspicious shell commands.
 
@@ -166,7 +171,17 @@ The extension does not blindly replay failed briefs: a failed task may already h
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, architecture, and the release checklist. See [CHANGELOG.md](CHANGELOG.md) and [GitHub Releases](https://github.com/7StaSH7/pi-sidekick/releases) for version history.
 
-Installations pinned to a tag do not advance automatically. To change versions, remove the old package source and install the new tagged source; never leave both copies enabled. This project is distributed through GitHub; no npm registry installation is advertised.
+Installations pinned to a tag do not advance automatically. To change versions, remove the old package source and install the new tagged source; never leave both copies enabled.
+
+### npm and the Pi package gallery
+
+Install the latest published version with:
+
+```bash
+pi install npm:pi-sidekick
+```
+
+The package includes the `pi-package` keyword and an explicit extension manifest for discovery in the [Pi package gallery](https://pi.dev/packages). Gallery visibility depends on npm indexing after publication. If switching from a GitHub or local installation, remove the old package source first so only one copy is enabled.
 
 ## Inspiration and license
 

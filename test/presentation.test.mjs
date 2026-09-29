@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { callText, formatTaskTranscript, formatTranscript, resultText } from '../presentation.mjs';
+import { callText, formatTaskTranscript, formatTranscript, resultText, resultView } from '../presentation.mjs';
 import { makeDelegationRecord } from '../cost.mjs';
 import { createActivityState, formatActivity, applyActivityEvent } from '../activity.mjs';
 
@@ -14,7 +14,17 @@ const theme = {
 };
 const strip = text => text.replace(/\x1b\[[0-9;]*m/g, '');
 
-test('expanded results show only the task transcript, excluding system prompts and hidden thinking', () => {
+test('expanded briefs strip terminal controls and short reports do not imply truncation', () => {
+  const injected = '\u001b]0;fake title\u0007Hello\u001b[2J';
+  const rendered = strip(callText({ brief: injected, constraints: injected, success_criteria: injected }, true, theme));
+  assert.doesNotMatch(rendered, /\u001b|fake title/);
+  assert.equal(rendered.match(/Hello/g).length, 3);
+  const view = resultView({ content: [{ type: 'text', text: 'Blocked: credentials missing.' }] }, {}, theme);
+  assert.doesNotMatch(view.more, /…/);
+  assert.match(view.more, /expand/);
+});
+
+test('expanded results show the report and task transcript without system prompts or hidden thinking', () => {
   const transcript = formatTranscript([
     { type: 'message', message: { role: 'system', content: [{ type: 'text', text: 'PRIVATE_SYSTEM_PROMPT' }] } },
     { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Read this file' }] } },
@@ -49,7 +59,7 @@ test('expanded results show only the task transcript, excluding system prompts a
   const collapsed = resultText(result, { expanded: false, isPartial: false, isError: false, expandHint: 'Ctrl+O to expand' }, theme);
   const expanded = resultText(result, { expanded: true, isPartial: false, isError: false, transcriptText: transcript }, theme);
   const failed = resultText(result, { expanded: false, isPartial: false, isError: true }, theme);
-  assert.match(strip(collapsed), /Complete · 1\.5s · 3 actions/);
+  assert.match(strip(collapsed), /Report ready · 1\.5s · 3 actions/);
   assert.match(collapsed, /Ctrl\+O to expand/);
   assert.match(expanded, /Final report/);
   assert.match(strip(failed), /Failed · 1\.5s · 3 actions/);
@@ -97,7 +107,7 @@ test('expanded results show only the task transcript, excluding system prompts a
 
 test('Pi-style progress is themed, wraps safely, and completed results stop showing Working', async () => {
   const require = createRequire(realpathSync(execFileSync('which', ['pi'], { encoding: 'utf8' }).trim()));
-  const { Text, visibleWidth } = await import(pathToFileURL(require.resolve('@earendil-works/pi-tui')).href);
+  const { Container, Markdown, Text, visibleWidth } = await import(pathToFileURL(require.resolve('@earendil-works/pi-tui')).href);
   const state = createActivityState('openai-codex/gpt-5.6-luna · max');
   applyActivityEvent(state, { type: 'tool_execution_start', toolCallId: 'read', toolName: 'read', args: { path: 'src/' + 'long-path/'.repeat(15) + 'file.ts' } }, 0);
   const partial = resultText({ content: [{ type: 'text', text: formatActivity(state, 1) }] }, { isPartial: true }, theme);
@@ -119,7 +129,7 @@ test('Pi-style progress is themed, wraps safely, and completed results stop show
   const collapsed = resultText(result, {}, theme);
   const expanded = resultText(result, { expanded: true }, theme);
   const error = resultText(result, { isError: true }, theme);
-  assert(strip(collapsed).startsWith('✓ Complete'));
+  assert(strip(collapsed).startsWith('Report ready'));
   assert(collapsed.includes('to expand'));
   assert(!collapsed.includes('Report line 7'));
   assert(expanded.includes('Report line 7'));
@@ -135,4 +145,39 @@ test('Pi-style progress is themed, wraps safely, and completed results stop show
       for (const line of new Text(text, 0, 0).render(width)) assert(visibleWidth(line) <= width, `overflow at ${width}: ${line}`);
     }
   }
+
+  const blockedReport = `## Result\nBlocked: **missing credentials**.\n\n## Changes\n- None.\n\n## Verification\nNot run.\n\n## Open items\n- Configure credentials.\n- Review \`src/${'long-path/'.repeat(12)}file.ts\`.`;
+  const blockedResult = { content: [{ type: 'text', text: blockedReport }] };
+  const compactView = resultView(blockedResult, { isPartial: false, isError: false }, theme);
+  assert.match(strip(compactView.heading), /^Report ready/);
+  assert.match(compactView.report, /Blocked:/);
+  assert.match(compactView.more, /expand/);
+  const view = resultView(blockedResult, {
+    expanded: true, isPartial: false, isError: false,
+    transcriptText: 'Sidekick\nTool result · bash\n**shell output**\n\u001b[31mterminal control\u001b[0m',
+  }, theme);
+  assert.match(strip(view.heading), /^Report ready/);
+  assert.equal(strip(view.verification), 'Worker report · not lead-verified');
+  assert.match(view.report, /Blocked: \*\*missing credentials\*\*/);
+  assert.match(view.transcript, /\*\*shell output\*\*/);
+  assert.doesNotMatch(view.transcript, /\u001b/);
+  assert.doesNotMatch(`${strip(view.heading)} ${strip(view.verification)}`, /✓ Complete|lead-verified completion/i);
+
+  const markdownTheme = Object.fromEntries(
+    'heading link linkUrl code codeBlock codeBlockBorder quote quoteBorder hr listBullet bold italic strikethrough underline'.split(' ').map(name => [name, text => text]),
+  );
+  const resultCard = new Container();
+  resultCard.addChild(new Text(view.heading, 0, 0));
+  resultCard.addChild(new Text(view.verification, 0, 0));
+  resultCard.addChild(new Markdown(view.report, 0, 0, markdownTheme));
+  resultCard.addChild(new Text(view.transcriptHeading, 0, 0));
+  resultCard.addChild(new Text(view.transcript, 0, 0));
+  for (const width of [1, 20, 40, 80, 120]) {
+    const lines = resultCard.render(width);
+    for (const line of lines) assert(visibleWidth(line) <= width, `Markdown result overflow at ${width}: ${line}`);
+  }
+  const rendered = resultCard.render(80).join('\n');
+  assert.match(rendered, /Blocked: missing credentials/);
+  assert.match(rendered, /\*\*shell output\*\*/, 'transcript stays literal text, not Markdown');
+  assert.doesNotMatch(rendered, /\*\*missing credentials\*\*/, 'final report is rendered as Markdown');
 });

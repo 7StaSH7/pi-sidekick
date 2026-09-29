@@ -1,7 +1,7 @@
 {
   "name": "pi-sidekick",
-  "version": "0.3.0",
-  "description": "Keep your lead model. Delegate bounded work to a persistent configurable sidekick in pi.",
+  "version": "0.4.0",
+  "description": "Keep your lead model. Delegate bounded work to a persistent sidekick using any provider registered in pi.",
   "license": "MIT",
   "author": "Aleksandr Stadnik",
   "repository": { "type": "git", "url": "git+https://github.com/7StaSH7/pi-sidekick.git" },
@@ -10,7 +10,7 @@
   "files": ["index.ts", "*.mjs", "README.md", "LICENSE", "CHANGELOG.md", "CONTRIBUTING.md"],
   "type": "module",
   "engines": { "node": ">=22.19.0" },
-  "keywords": ["pi-package", "pi-extension", "sidekick", "coding-agent", "openai"],
+  "keywords": ["pi-package", "pi-extension", "sidekick", "coding-agent", "multi-provider"],
   "pi": { "extensions": ["./index.ts"] },
   "scripts": { "test": "node --test test/*.test.mjs" },
   "peerDependencies": {

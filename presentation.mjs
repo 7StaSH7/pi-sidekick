@@ -4,7 +4,7 @@ import { compareCosts, formatCompactTaskCost, formatTaskCost } from './cost.mjs'
 export function callText(args, expanded, theme) {
   const title = theme.fg('toolTitle', theme.bold('Sidekick'));
   if (!expanded) return `${title}\n${theme.fg('muted', clean(args.brief, 120) || 'Preparing delegation…')}`;
-  return `${title}\n${args.brief ?? ''}\n\nConstraints\n${args.constraints ?? ''}\n\nSuccess criteria\n${args.success_criteria ?? ''}`;
+  return `${title}\n${safeTranscriptText(args.brief)}\n\nConstraints\n${safeTranscriptText(args.constraints)}\n\nSuccess criteria\n${safeTranscriptText(args.success_criteria)}`;
 }
 
 function safeTranscriptText(value) {
@@ -76,8 +76,8 @@ function progressText(text, theme) {
 function resultHeading(details, isError, theme) {
   const label = isError
     ? details.costRecord?.outcome === 'cancelled' ? '✗ Cancelled' : '✗ Failed'
-    : '✓ Complete';
-  const heading = theme.fg(isError ? 'error' : 'success', label);
+    : 'Report ready';
+  const heading = theme.fg(isError ? 'error' : 'accent', label);
   const metadata = [];
   if (Number.isFinite(details.durationMs)) metadata.push(formatDuration(details.durationMs));
   if (Number.isFinite(details.actionCount)) metadata.push(`${details.actionCount} ${details.actionCount === 1 ? 'action' : 'actions'}`);
@@ -97,36 +97,64 @@ function compactCost(record, theme) {
   return `${theme.fg('muted', lines[0])}\n${theme.fg(color, lines[1])}`;
 }
 
-export function resultText(result, { isPartial, expanded, isError, expandHint = 'to expand', transcriptText, transcriptError }, theme) {
+export function resultView(result, { isPartial, expanded, isError, expandHint = 'to expand', transcriptText, transcriptError }, theme) {
   const details = result.details ?? {};
   const text = (result.content ?? []).filter(part => part.type === 'text').map(part => part.text).join('\n');
   if (isPartial) {
     if (expanded && Array.isArray(details.actions)) {
       const header = text.split('\n').slice(0, 2).join('\n');
-      return progressText([header, formatActivityActions(details.actions)].filter(Boolean).join('\n'), theme);
+      return { text: progressText([header, formatActivityActions(details.actions)].filter(Boolean).join('\n'), theme) };
     }
-    return `${progressText(text, theme)}\n${theme.fg('dim', expandHint)}`;
+    return { text: `${progressText(text, theme)}\n${theme.fg('dim', expandHint)}` };
   }
 
   const cost = details.costRecord
     ? expanded ? formatTaskCost(details.costRecord) : compactCost(details.costRecord, theme)
     : '';
+  const safeText = safeTranscriptText(text);
   const unavailableTranscript = transcriptError
-    ? `Saved Sidekick transcript unavailable: ${transcriptError}.\n\nTask report/error\n${resultReport(text)}`
+    ? `Saved Sidekick transcript unavailable: ${safeTranscriptText(transcriptError)}.\n\nTask report/error\n${resultReport(safeText)}`
     : undefined;
   if (isError) {
     const body = expanded
-      ? transcriptText ? `${transcriptText}\n\nError\n${text}` : unavailableTranscript ?? text
-      : text;
+      ? transcriptText ? `${safeTranscriptText(transcriptText)}\n\nError\n${safeText}` : unavailableTranscript ?? safeText
+      : safeText;
     const more = expanded ? '' : `\n${theme.fg('dim', expandHint)}`;
-    return `${resultHeading(details, true, theme)}\n${theme.fg('error', body)}${cost ? `\n${theme.fg('dim', cost)}` : ''}${more}`;
+    return { text: `${resultHeading(details, true, theme)}\n${theme.fg('error', body)}${cost ? `\n${theme.fg('dim', cost)}` : ''}${more}` };
   }
-  if (expanded) {
-    const body = transcriptText ?? unavailableTranscript ?? text;
-    const session = details.sessionFile ? `\n\nSidekick session: ${details.sessionFile}\nLead: verify the actual diff and checks before declaring completion.` : '';
-    return `${resultHeading(details, false, theme)}\n${theme.fg('toolOutput', body)}${cost ? `\n\n${theme.fg('dim', cost)}` : ''}${session ? theme.fg('dim', session) : ''}`;
-  }
-  const preview = resultReport(text).split('\n').slice(0, 5).join('\n');
-  const more = `\n… ${expandHint}`;
-  return `${resultHeading(details, false, theme)}\n${theme.fg('toolOutput', preview)}${more}${cost ? `\n${cost}` : ''}`;
+
+  const reportText = safeTranscriptText(resultReport(safeText));
+  const report = expanded && transcriptText
+    ? reportText.replace(/\n?\[Report truncated\.\]\s*$/, '')
+    : reportText;
+  return {
+    heading: resultHeading(details, false, theme),
+    verification: theme.fg('dim', 'Worker report · not lead-verified'),
+    report: expanded ? report : report.split('\n').slice(0, 5).join('\n'),
+    transcriptWarning: expanded && transcriptError
+      ? theme.fg('warning', `Saved Sidekick transcript unavailable: ${safeTranscriptText(transcriptError)}.`)
+      : undefined,
+    transcript: expanded && transcriptText ? safeTranscriptText(transcriptText) : undefined,
+    transcriptHeading: theme.fg('muted', 'Task transcript'),
+    session: expanded && details.sessionFile
+      ? theme.fg('dim', `Sidekick session: ${safeTranscriptText(details.sessionFile)}\nLead: verify the actual diff and checks before declaring completion.`)
+      : undefined,
+    more: expanded ? undefined : theme.fg('dim', `${report.split('\n').length > 5 ? '… ' : ''}${expandHint}`),
+    cost: cost ? expanded ? theme.fg('dim', cost) : cost : undefined,
+  };
+}
+
+export function resultText(result, options, theme) {
+  const view = resultView(result, options, theme);
+  if (view.text !== undefined) return view.text;
+  return [
+    view.heading,
+    view.verification,
+    view.transcriptWarning,
+    view.report,
+    view.transcript ? `${view.transcriptHeading}\n${view.transcript}` : undefined,
+    view.more,
+    view.cost,
+    view.session,
+  ].filter(Boolean).join('\n');
 }

@@ -439,6 +439,178 @@ test('native pi: pair, persistent context, hooks/UI, cancellation, errors, resum
   }
 });
 
+test('native pi: active user correction reaches the same worker and its task transcript', { timeout: 60000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-sidekick-steer-'));
+  const agentDir = join(dir, 'agent');
+  const cwd = join(dir, 'work');
+  mkdirSync(agentDir); mkdirSync(cwd);
+  writeFileSync(join(cwd, 'input.txt'), 'steering fixture content');
+  writeFileSync(join(agentDir, 'sidekick.json'), JSON.stringify({ sidekick: SIDEKICK, timeoutMinutes: 90 }));
+  const env = {
+    ...process.env,
+    PI_CODING_AGENT_DIR: agentDir,
+    PI_OFFLINE: '1',
+    PI_SIDEKICK_TEST: '1',
+    PI_SIDEKICK_TEST_LOG: join(dir, 'events.jsonl'),
+    PI_SIDEKICK_TEST_RACE_RELEASE_FILE: join(dir, 'release-race'),
+  };
+  delete env.PI_SIDEKICK_WORKER;
+  let peer;
+  const notifications = [];
+  const waitNotify = text => peer.waitForEvent(event => event.type === 'extension_ui_request'
+    && event.method === 'notify' && event.message?.includes(text), { timeoutMs: 15000 });
+  const command = args => peer.request('prompt', { message: `/sidekick ${args}` });
+  try {
+    peer = new RpcPeer('pi', ['--mode', 'rpc', '--offline', '--approve', '--no-extensions',
+      '-e', join(project, 'index.ts'), '-e', join(project, 'test/fixture.ts'),
+      '--provider', LEAD.provider, '--model', LEAD.id, '--thinking', LEAD.thinking], {
+      cwd, env,
+      onUi: request => {
+        if (request.method === 'notify') notifications.push(request.message);
+        return { cancelled: true };
+      },
+    });
+    const leadBefore = await peer.request('get_state');
+    const sidekickCommand = (await peer.request('get_commands')).commands.find(item => item.name === 'sidekick');
+    assert.match(sidekickCommand.description, /steer <correction>/);
+    const idleSteer = waitNotify('No active Sidekick task');
+    await command('steer IDLE_CORRECTION_SECRET');
+    await idleSteer;
+    const emptySteer = waitNotify('non-empty text');
+    await command('steer');
+    await emptySteer;
+    const oversizedText = 'x'.repeat(4001);
+    const oversizedSteer = waitNotify('exceeds 4000 characters');
+    await command(`steer ${oversizedText}`);
+    await oversizedSteer;
+    assert(notifications.every(message => !message.includes('IDLE_CORRECTION_SECRET') && !message.includes(oversizedText)));
+    const settled = peer.waitForEvent(event => event.type === 'agent_settled', { timeoutMs: 30000 });
+    void settled.catch(() => {});
+    const working = peer.waitForEvent(event => event.type === 'tool_execution_update' && event.toolName === TOOL
+      && JSON.stringify(event.partialResult).includes('▶ bash')
+      && JSON.stringify(event.partialResult).includes('sleep 5'), { timeoutMs: 30000 });
+    void working.catch(() => {});
+    await peer.request('prompt', { message: 'WAIT_SHORT' });
+    await working;
+
+    const correction = 'Include ACTIVE_CORRECTION_OK in your report.';
+    const queued = peer.waitForEvent(event => event.type === 'extension_ui_request' && event.method === 'notify'
+      && event.message?.includes('correction queued'), { timeoutMs: 10000 });
+    await peer.request('prompt', { message: `/sidekick steer ${correction}` });
+    await queued;
+    await settled;
+
+    const report = (await peer.request('get_last_assistant_text')).text;
+    assert.match(report, /ACTIVE_CORRECTION_OK/, report);
+    assert(notifications.every(message => !message.includes(correction)), 'notifications must not echo the correction');
+    const result = (await peer.request('get_entries')).entries.findLast(entry => entry.type === 'message'
+      && entry.message.role === 'toolResult' && entry.message.toolName === TOOL).message;
+    assert.equal(result.details.costRecord.outcome, 'success');
+    const transcript = savedTaskTranscript(result.details.transcript);
+    assert.match(transcript, /User correction for this Sidekick task/);
+    assert.match(transcript, /ACTIVE_CORRECTION_OK/);
+
+    const leadAfter = await peer.request('get_state');
+    assert.equal(leadAfter.model.provider, leadBefore.model.provider);
+    assert.equal(leadAfter.model.id, leadBefore.model.id);
+    assert.equal(leadAfter.thinkingLevel, leadBefore.thinkingLevel);
+    assert.deepEqual(JSON.parse(readFileSync(join(agentDir, 'sidekick.json'), 'utf8')),
+      { sidekick: SIDEKICK, timeoutMinutes: 90 });
+    const childCalls = readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').trim().split('\n').map(JSON.parse).filter(call => call.child && call.model);
+    assert(childCalls.length >= 2, 'correction must reach the active worker for another model call');
+    for (const call of childCalls) {
+      assert.equal(call.provider, SIDEKICK.provider);
+      assert.equal(call.model, SIDEKICK.id);
+      assert.equal(call.thinking, SIDEKICK.thinking);
+    }
+
+    const cancelWorking = peer.waitForEvent(event => event.type === 'tool_execution_update' && event.toolName === TOOL
+      && JSON.stringify(event.partialResult).includes('▶ bash')
+      && JSON.stringify(event.partialResult).includes('sleep 30'), { timeoutMs: 30000 });
+    await peer.request('prompt', { message: 'WAIT' });
+    await cancelWorking;
+    const cancelCorrection = 'CANCEL_LEAK_WRITE private data';
+    const cancelQueued = waitNotify('correction queued');
+    await command(`steer ${cancelCorrection}`);
+    await cancelQueued;
+    const cancelSettled = peer.waitForEvent(event => event.type === 'agent_settled', { timeoutMs: 30000 });
+    void cancelSettled.catch(() => {});
+    await peer.request('abort', {}, 10000);
+    await cancelSettled;
+    assert(notifications.some(message => message.includes('queued Sidekick correction') && message.includes('not applied')));
+    const cancelledResult = (await peer.request('get_entries')).entries.findLast(entry => entry.type === 'message'
+      && entry.message.role === 'toolResult' && entry.message.toolName === TOOL).message;
+    assert.equal(cancelledResult.details.costRecord.outcome, 'cancelled');
+    assert.doesNotMatch(savedTaskTranscript(cancelledResult.details.transcript), /CANCEL_LEAK_WRITE/);
+    assert.equal(existsSync(join(cwd, 'cancel-leak.txt')), false);
+
+    const recoverySettled = peer.waitForEvent(event => event.type === 'agent_settled', { timeoutMs: 30000 });
+    await peer.request('prompt', { message: 'READ after cancelled correction' });
+    await recoverySettled;
+    assert.doesNotMatch((await peer.request('get_last_assistant_text')).text, /CANCEL_LEAK_WRITE/);
+
+    const raceSettled = peer.waitForEvent(event => event.type === 'agent_settled', { timeoutMs: 30000 });
+    void raceSettled.catch(() => {});
+    await peer.request('prompt', { message: 'FAST_SETTLE_RACE' });
+    const deadline = Date.now() + 5000;
+    while (!readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').includes('"hook":"settle-race"') && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert(readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').includes('"hook":"settle-race"'), 'fixture must hold the child at agent_settled');
+    const lateCorrection = 'RACE_LEAK_WRITE private data';
+    const notesBeforeLate = notifications.length;
+    const lateNotApplied = waitNotify('not applied before the task ended');
+    await command(`steer ${lateCorrection}`);
+    writeFileSync(env.PI_SIDEKICK_TEST_RACE_RELEASE_FILE, 'release');
+    await raceSettled;
+    await lateNotApplied;
+    assert(!notifications.slice(notesBeforeLate).some(message => message.includes('correction queued')),
+      'a late accepted steer must not be reported as queued for the completed task');
+    const raceTaskResult = (await peer.request('get_entries')).entries.findLast(entry => entry.type === 'message'
+      && entry.message.role === 'toolResult' && entry.message.toolName === TOOL).message;
+    assert.equal(raceTaskResult.details.costRecord.outcome, 'success');
+    assert.doesNotMatch(savedTaskTranscript(raceTaskResult.details.transcript), /RACE_LEAK_WRITE/);
+    assert.equal(existsSync(join(cwd, 'race-leak.txt')), false);
+
+    const finalSettled = peer.waitForEvent(event => event.type === 'agent_settled', { timeoutMs: 30000 });
+    await peer.request('prompt', { message: 'READ after completion race' });
+    await finalSettled;
+    assert.doesNotMatch((await peer.request('get_last_assistant_text')).text, /RACE_LEAK_WRITE/);
+    assert.equal(existsSync(join(cwd, 'race-leak.txt')), false);
+    assert(notifications.every(message => !message.includes(cancelCorrection) && !message.includes(lateCorrection)),
+      'notifications must not echo queued correction text');
+
+    // Inherited input hooks may transform text before Pi queues it. Exact-text
+    // tracking cannot decide whether such a correction was queued or consumed.
+    rmSync(env.PI_SIDEKICK_TEST_RACE_RELEASE_FILE);
+    const previousHolds = readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').split('"hook":"settle-race"').length;
+    const transformedSettled = peer.waitForEvent(event => event.type === 'agent_settled', { timeoutMs: 30000 });
+    void transformedSettled.catch(() => {});
+    await peer.request('prompt', { message: 'FAST_SETTLE_RACE transformed input' });
+    const transformDeadline = Date.now() + 5000;
+    while (readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').split('"hook":"settle-race"').length === previousHolds && Date.now() < transformDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert(readFileSync(env.PI_SIDEKICK_TEST_LOG, 'utf8').split('"hook":"settle-race"').length > previousHolds);
+    const transformedNotice = peer.waitForEvent(event => event.type === 'extension_ui_request'
+      && event.method === 'notify' && /correction.*(not applied|delivery unverified)/.test(event.message), { timeoutMs: 10000 });
+    await command('steer TRANSFORM_STEER RACE_LEAK_WRITE');
+    const notice = await transformedNotice;
+    writeFileSync(env.PI_SIDEKICK_TEST_RACE_RELEASE_FILE, 'release');
+    await transformedSettled;
+    assert.match(notice.message, /delivery unverified/, 'transformed input is not evidence of non-delivery');
+    const afterTransform = peer.waitForEvent(event => event.type === 'agent_settled', { timeoutMs: 10000 });
+    void afterTransform.catch(() => {});
+    await peer.request('prompt', { message: 'READ after transformed correction' });
+    await afterTransform;
+    assert.doesNotMatch((await peer.request('get_last_assistant_text')).text, /TRANSFORM_STEER|RACE_LEAK_WRITE/);
+    assert.equal(existsSync(join(cwd, 'race-leak.txt')), false, 'transformed correction must not run in the next task');
+  } finally {
+    await peer?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('native pi: setup selects and runs an authenticated non-OpenAI sidekick model', { timeout: 60000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-sidekick-provider-setup-'));
   const agentDir = join(dir, 'agent');

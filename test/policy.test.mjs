@@ -1,6 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_SIDEKICK_CONFIG, DEFAULT_TIMEOUT_MINUTES, LEGACY_STATE, LEGACY_STATS, SIDEKICK, STATE, STATS, TOOL, assertModel, requireModel, restoreState, hasSidekickSibling, isStatsEntry, inheritedExtensions, timeoutMilliseconds, validateSidekickConfig, validateSidekickSelection, parseLaunchSidekick } from '../policy.mjs';
+import { DEFAULT_SIDEKICK_CONFIG, DEFAULT_TIMEOUT_MINUTES, LEAD_PROMPT, LEGACY_STATE, LEGACY_STATS, SIDEKICK, STATE, STATS, TOOL, assertModel, requireModel, restoreState, hasSidekickSibling, isStatsEntry, inheritedExtensions, sidekickPrompt, timeoutMilliseconds, validateSidekickConfig, validateSidekickSelection, parseLaunchSidekick } from '../policy.mjs';
+
+test('Sidekick report prompts distinguish worker claims from lead verification without forcing delegation', () => {
+  const prompt = sidekickPrompt({ provider: 'openai-codex', id: 'model', thinking: 'high' });
+  assert.match(prompt, /Result: complete, partial, or blocked as your assessment/);
+  assert.match(prompt, /worker claim, not lead verification/);
+  assert.match(prompt, /Changes: exact paths changed/);
+  assert.match(prompt, /Verification: exact commands and actual outcomes/);
+  assert.match(prompt, /explicitly write “Not run”/);
+  assert.match(prompt, /Open items:/);
+  assert.match(prompt, /Mark work partial or blocked when acceptance criteria remain unmet or checks fail/);
+  assert.match(prompt, /runtime PID\/ports only when the task starts or changes a runtime process/);
+  assert.match(LEAD_PROMPT, /when delegation is useful; work directly when that is simpler/);
+  assert.match(LEAD_PROMPT, /already-decided interfaces and known findings/);
+  assert.match(LEAD_PROMPT, /review the actual diff and check evidence/);
+  assert.match(LEAD_PROMPT, /Consolidate any rework into a focused follow-up brief/);
+});
 
 test('inherit explicit extension guards and discovery choice, not prompts or credentials', () => {
   assert.deepEqual(inheritedExtensions(['--api-key', 'secret', '-ne', '-e', './guard.ts', '--extension=/abs/check.ts', '-e', 'npm:trusted', '--', '-e', 'not-an-extension'], '/initial'),

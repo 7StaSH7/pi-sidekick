@@ -54,4 +54,13 @@ For bug reports, include Pi/Node versions, OS, relevant error text, and reproduc
      --verify-tag --title "vX.Y.Z" --notes-file /path/to/release-notes.md
    ```
 
-The GitHub release includes source archives automatically and the package archive explicitly. There is no automatic npm publishing and no release token stored in this repository. Tags are immutable release references; fixes get a new version.
+5. Publish the reviewed archive to npm (run `npm login` first if needed):
+
+   ```bash
+   npm publish ./pi-sidekick-X.Y.Z.tgz --access public
+   npm view pi-sidekick version description keywords
+   ```
+
+The `pi-package` keyword makes the published npm package eligible for the [Pi package gallery](https://pi.dev/packages); indexing is not immediate. Keep this keyword and the `pi.extensions` manifest in `package.json`.
+
+The GitHub release includes source archives automatically and the package archive explicitly. npm publishing is manual; no release token is stored in this repository. Tags and published npm versions are immutable release references; fixes get a new version.
